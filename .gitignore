@@ -1,0 +1,4 @@
+__pycache__/
+.pip-temp/
+*.zip
+data/all_three_zones*.csv

@@ -1,4 +1,6 @@
 import importlib
+from pathlib import Path
+import re
 
 import pandas as pd
 import requests
@@ -14,6 +16,7 @@ scouting_report_helpers = importlib.reload(scouting_report_helpers)
 # It already includes clean stats, percentiles, strengths, and weaknesses.
 DATA_FILE_PATH = "cleaned_data/skaters_strengths.csv"
 NHL_EDGE_BASE_URL = "https://api-web.nhle.com/v1/edge"
+MICROSTATS_FILE_PATH = "data/all_three_zones_2025_26_regular.csv"
 
 
 def add_custom_styles():
@@ -33,12 +36,45 @@ def add_custom_styles():
     )
 
 
+def normalize_name(name):
+    """
+    Normalize player names so different data sources can match.
+
+    Example:
+    "Brad\u00a0Marchand" and "Brad Marchand" become the same key.
+    """
+    name = str(name).replace("\u00a0", " ")
+    name = re.sub(r"[^a-zA-Z ]", "", name)
+    name = re.sub(r"\s+", " ", name).strip().lower()
+
+    return name
+
+
 def load_player_data():
     """
     Load the prepared player-card dataset.
     """
     player_data = pd.read_csv(DATA_FILE_PATH)
     return player_data
+
+
+@st.cache_data
+def load_microstats_data():
+    """
+    Load local All Three Zones microstats if the file exists.
+
+    We do not require this file for the public app because it may be
+    subscription data that should not be committed to GitHub.
+    """
+    microstats_path = Path(MICROSTATS_FILE_PATH)
+
+    if not microstats_path.exists():
+        return None
+
+    microstats_data = pd.read_csv(microstats_path)
+    microstats_data["name_key"] = microstats_data["Player"].apply(normalize_name)
+
+    return microstats_data
 
 
 @st.cache_data(ttl=3600)
@@ -171,6 +207,71 @@ def get_shot_location_summary(edge_data, location_code):
             return location_summary
 
     return {}
+
+
+def safe_micro_value(row, column_name):
+    """
+    Get one microstat number from a row.
+    """
+    if row is None or column_name not in row:
+        return 0
+
+    value = row[column_name]
+
+    if pd.isna(value):
+        return 0
+
+    return value
+
+
+def calculate_micro_per_60(row, column_name):
+    """
+    Convert a microstat count into a per-60 rate.
+    """
+    toi = safe_micro_value(row, "5v5 TOI")
+
+    if toi <= 0:
+        return "NA"
+
+    value = safe_micro_value(row, column_name)
+
+    return round(value / toi * 60, 2)
+
+
+def calculate_micro_percentage(row, numerator_column, denominator_column):
+    """
+    Calculate a microstat percentage.
+    """
+    numerator = safe_micro_value(row, numerator_column)
+    denominator = safe_micro_value(row, denominator_column)
+
+    if denominator <= 0:
+        return "NA"
+
+    return f"{round(numerator / denominator * 100, 1)}%"
+
+
+def get_microstats_row(player):
+    """
+    Find the selected player's All Three Zones microstats row.
+    """
+    microstats_data = load_microstats_data()
+
+    if microstats_data is None:
+        return None
+
+    player_name_key = normalize_name(player["name"])
+    matching_rows = microstats_data[microstats_data["name_key"] == player_name_key]
+
+    if matching_rows.empty:
+        return None
+
+    same_team_rows = matching_rows[matching_rows["Team"] == player["team"]]
+
+    if not same_team_rows.empty:
+        return same_team_rows.iloc[0]
+
+    return matching_rows.iloc[0]
 
 
 def format_comparison_value(value, value_type, decimals=2):
@@ -548,6 +649,70 @@ def show_nhl_edge_tracking(player):
             st.caption(f"{format_edge_percentile(zone_time.get('offensiveZoneEvPercentile'))} percentile")
 
 
+def show_microstats(player):
+    """
+    Show All Three Zones microstats when the local data file exists.
+    """
+    microstats_row = get_microstats_row(player)
+
+    with st.expander("Microstats"):
+        st.caption(
+            "Local All Three Zones-style microstats. These describe how a player creates offence, enters/exits zones, forechecks, and defends entries at 5v5."
+        )
+
+        if microstats_row is None:
+            st.write("Microstats are not available for this player or this public app.")
+            return
+
+        st.subheader("Offensive Creation")
+        offense_columns = st.columns(4)
+
+        with offense_columns[0]:
+            show_stat("Shots/60", calculate_micro_per_60(microstats_row, "Shots"))
+        with offense_columns[1]:
+            show_stat("Chances/60", calculate_micro_per_60(microstats_row, "Chances"))
+        with offense_columns[2]:
+            show_stat("Primary Shot Assists/60", calculate_micro_per_60(microstats_row, "Primary Shot Assists"))
+        with offense_columns[3]:
+            show_stat("Chance Assists/60", calculate_micro_per_60(microstats_row, "Chance Assists"))
+
+        st.subheader("Transition")
+        transition_columns = st.columns(4)
+
+        with transition_columns[0]:
+            show_stat("Zone Entries/60", calculate_micro_per_60(microstats_row, "Zone Entries"))
+        with transition_columns[1]:
+            show_stat("Controlled Entry%", calculate_micro_percentage(microstats_row, "Carries", "Zone Entries"))
+        with transition_columns[2]:
+            show_stat("Entry Pass Plays/60", calculate_micro_per_60(microstats_row, "Entries w/ Passing Play"))
+        with transition_columns[3]:
+            show_stat("Entry Chances/60", calculate_micro_per_60(microstats_row, "Carries w/ Chances"))
+
+        st.subheader("Rush, Forecheck, and Exits")
+        puck_movement_columns = st.columns(4)
+
+        with puck_movement_columns[0]:
+            show_stat("Rush Shots/60", calculate_micro_per_60(microstats_row, "Shots off Rush"))
+        with puck_movement_columns[1]:
+            show_stat("Forecheck Pressures/60", calculate_micro_per_60(microstats_row, "Forecheck Pressures"))
+        with puck_movement_columns[2]:
+            show_stat("Zone Exits/60", calculate_micro_per_60(microstats_row, "Zone Exits"))
+        with puck_movement_columns[3]:
+            show_stat("Possession Exit%", calculate_micro_percentage(microstats_row, "Exits w/ Possession", "Zone Exits"))
+
+        st.subheader("Defense and Breakouts")
+        defense_columns = st.columns(4)
+
+        with defense_columns[0]:
+            show_stat("DZ Puck Touches/60", calculate_micro_per_60(microstats_row, "DZ Puck Touches"))
+        with defense_columns[1]:
+            show_stat("DZ Retrievals/60", calculate_micro_per_60(microstats_row, "DZ Retrievals"))
+        with defense_columns[2]:
+            show_stat("Retrievals to Exits%", calculate_micro_percentage(microstats_row, "Retrievals Leading to Exits", "DZ Retrievals"))
+        with defense_columns[3]:
+            show_stat("Entry Denials/60", calculate_micro_per_60(microstats_row, "Denials"))
+
+
 def show_power_play_stats(player):
     """
     Show important power-play stats.
@@ -793,6 +958,7 @@ def main():
     show_player_header(selected_player)
     show_basic_stats(selected_player)
     show_nhl_edge_tracking(selected_player)
+    show_microstats(selected_player)
     show_power_play_stats(selected_player)
     show_penalty_kill_stats(selected_player)
     show_percentiles(selected_player)
