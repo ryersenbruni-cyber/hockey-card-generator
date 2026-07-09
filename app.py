@@ -722,6 +722,184 @@ def show_basic_stats(player):
         show_stat("Blocks", format_optional_number(player.get("total_blocks", player["shotsBlockedByPlayer"])))
 
 
+def average_percentiles(percentiles):
+    """
+    Average percentile values while ignoring missing values.
+
+    This lets us build one simple score from several smaller rankings.
+    """
+    clean_percentiles = [
+        percentile
+        for percentile in percentiles
+        if percentile is not None and not pd.isna(percentile)
+    ]
+
+    if len(clean_percentiles) == 0:
+        return None
+
+    return sum(clean_percentiles) / len(clean_percentiles)
+
+
+def get_player_percentile(player_data, player, column_name, higher_is_better=True):
+    """
+    Get one same-position percentile for the selected player.
+    """
+    return calculate_player_data_percentile(
+        player_data,
+        column_name,
+        player,
+        higher_is_better,
+    )
+
+
+def calculate_impact_scores(player, player_data):
+    """
+    Create simple impact scores from existing percentiles.
+
+    These are not WAR. They are beginner-friendly value scores built from
+    same-position percentiles.
+    """
+    microstats_row = get_microstats_row(player)
+
+    offensive_components = [
+        get_player_percentile(player_data, player, "points_per_60"),
+        get_player_percentile(player_data, player, "expected_goals_per_60"),
+        get_player_percentile(player_data, player, "shots_per_60"),
+    ]
+
+    play_driving_components = [
+        get_player_percentile(player_data, player, "onIce_xGoalsPercentage"),
+        get_player_percentile(player_data, player, "onIce_corsiPercentage"),
+        get_player_percentile(player_data, player, "onIce_fenwickPercentage"),
+    ]
+
+    defensive_components = [
+        get_player_percentile(player_data, player, "on_ice_xgoals_against_per_60", False),
+        get_player_percentile(player_data, player, "blocks_per_60"),
+        get_player_percentile(player_data, player, "takeaways_per_60"),
+    ]
+
+    special_teams_components = [
+        get_player_percentile(player_data, player, "pp_points_per_60"),
+        get_player_percentile(player_data, player, "pp_on_ice_xgoals_percentage"),
+        get_player_percentile(player_data, player, "pk_xgoals_against_per_60", False),
+        get_player_percentile(player_data, player, "pk_blocks"),
+        get_player_percentile(player_data, player, "pk_takeaways"),
+    ]
+
+    if microstats_row is not None:
+        offensive_components.extend(
+            [
+                get_micro_rate_percentile(microstats_row, "Chances"),
+                get_micro_rate_percentile(microstats_row, "Primary Shot Assists"),
+                get_micro_rate_percentile(microstats_row, "Chance Assists"),
+            ]
+        )
+        play_driving_components.extend(
+            [
+                get_micro_rate_percentile(microstats_row, "Zone Entries"),
+                get_micro_percentage_percentile(microstats_row, "Carries", "Zone Entries"),
+                get_micro_percentage_percentile(microstats_row, "Exits w/ Possession", "Zone Exits"),
+            ]
+        )
+        defensive_components.extend(
+            [
+                get_micro_rate_percentile(microstats_row, "Denials"),
+                get_micro_rate_percentile(microstats_row, "DZ Retrievals"),
+                get_micro_percentage_percentile(
+                    microstats_row,
+                    "Retrievals Leading to Exits",
+                    "DZ Retrievals",
+                ),
+            ]
+        )
+
+    offensive_impact = average_percentiles(offensive_components)
+    play_driving_impact = average_percentiles(play_driving_components)
+    defensive_impact = average_percentiles(defensive_components)
+    special_teams_impact = average_percentiles(special_teams_components)
+    player_value_score = average_percentiles(
+        [
+            offensive_impact,
+            play_driving_impact,
+            defensive_impact,
+            special_teams_impact,
+        ]
+    )
+
+    return {
+        "Player Value Score": player_value_score,
+        "Offensive Impact": offensive_impact,
+        "5v5 Driving Impact": play_driving_impact,
+        "Defensive Impact": defensive_impact,
+        "Special Teams Impact": special_teams_impact,
+    }
+
+
+def show_impact_card(label, score):
+    """
+    Show one impact score as a colored card.
+    """
+    if score is None or pd.isna(score):
+        st.metric(label, "NA")
+        return
+
+    rounded_score = round(score)
+    card_color = get_percentile_color(rounded_score)
+
+    st.markdown(
+        f"""
+        <div style="
+            border: 1px solid rgba(120,120,120,0.25);
+            border-radius: 10px;
+            padding: 14px 16px;
+            margin-bottom: 10px;">
+            <div style="font-size: 0.95rem; font-weight: 700; margin-bottom: 8px;">
+                {label}
+            </div>
+            <div style="font-size: 2.2rem; font-weight: 800; color: {card_color}; line-height: 1;">
+                {rounded_score}
+            </div>
+            <div style="font-size: 0.8rem; opacity: 0.75; margin-top: 4px;">
+                out of 100
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def show_impact_scores(player, player_data):
+    """
+    Show our first simple player value model.
+    """
+    st.header("Impact Score")
+    st.caption(
+        "These are WAR-like scores, not true WAR. They combine same-position percentiles from MoneyPuck, special teams, and microstats when available."
+    )
+
+    impact_scores = calculate_impact_scores(player, player_data)
+    score_columns = st.columns(5)
+
+    for score_column, (label, score) in zip(score_columns, impact_scores.items()):
+        with score_column:
+            show_impact_card(label, score)
+
+    with st.expander("How these scores are built"):
+        st.write(
+            "Offensive Impact uses scoring, shooting, expected goals, and creation microstats."
+        )
+        st.write(
+            "5v5 Driving Impact uses on-ice xG%, Corsi%, Fenwick%, entries, and exits."
+        )
+        st.write(
+            "Defensive Impact uses xGA suppression, blocks, takeaways, denials, and retrievals."
+        )
+        st.write(
+            "Special Teams Impact uses power-play production, power-play on-ice xG%, and penalty-kill prevention stats."
+        )
+
+
 def show_tracking_tools(player):
     """
     Show NHL EDGE Player & Puck Tracking stats.
@@ -1276,6 +1454,7 @@ def main():
     with player_card_tab:
         show_player_header(selected_player)
         show_basic_stats(selected_player)
+        show_impact_scores(selected_player, player_data)
         show_percentiles(selected_player)
         show_microstats(selected_player)
         show_special_teams_stats(selected_player, player_data)
