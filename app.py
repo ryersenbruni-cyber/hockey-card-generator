@@ -13,6 +13,7 @@ scouting_report_helpers = importlib.reload(scouting_report_helpers)
 # This file was created in Milestone 7.
 # It already includes clean stats, percentiles, strengths, and weaknesses.
 DATA_FILE_PATH = "cleaned_data/skaters_strengths.csv"
+NHL_EDGE_BASE_URL = "https://api-web.nhle.com/v1/edge"
 
 
 def add_custom_styles():
@@ -38,6 +39,28 @@ def load_player_data():
     """
     player_data = pd.read_csv(DATA_FILE_PATH)
     return player_data
+
+
+@st.cache_data(ttl=3600)
+def load_nhl_edge_data(player_id):
+    """
+    Load NHL EDGE tracking data for one player.
+
+    NHL EDGE data comes from the NHL's public web API.
+    ttl=3600 means Streamlit can reuse the result for one hour.
+    """
+    edge_url = f"{NHL_EDGE_BASE_URL}/skater-detail/{player_id}/now"
+
+    try:
+        response = requests.get(edge_url, timeout=10)
+
+        if response.status_code == 200:
+            return response.json()
+
+    except requests.RequestException:
+        pass
+
+    return None
 
 
 def show_stat(label, value):
@@ -88,6 +111,66 @@ def format_optional_percentage(value):
         return "NA"
 
     return f"{round(value * 100, 1)}%"
+
+
+def format_edge_number(value, decimals=1):
+    """
+    Format a number from NHL EDGE.
+    """
+    if value is None or pd.isna(value):
+        return "NA"
+
+    return round(value, decimals)
+
+
+def format_edge_percentile(value):
+    """
+    Format an NHL EDGE percentile.
+
+    NHL EDGE percentiles arrive as decimals:
+    0.85 means 85th percentile.
+    """
+    if value is None or pd.isna(value):
+        return "NA"
+
+    return f"{round(value * 100)}th"
+
+
+def get_nested_value(data, keys):
+    """
+    Safely get a value from nested NHL EDGE data.
+
+    Example:
+    get_nested_value(data, ["skatingSpeed", "speedMax", "imperial"])
+    """
+    current_value = data
+
+    for key in keys:
+        if not isinstance(current_value, dict) or key not in current_value:
+            return None
+
+        current_value = current_value[key]
+
+    return current_value
+
+
+def get_shot_location_summary(edge_data, location_code):
+    """
+    Find one shot-location row from NHL EDGE.
+
+    Common location codes are:
+    - all
+    - high
+    - mid
+    - long
+    """
+    shot_summary = edge_data.get("sogSummary", [])
+
+    for location_summary in shot_summary:
+        if location_summary.get("locationCode") == location_code:
+            return location_summary
+
+    return {}
 
 
 def format_comparison_value(value, value_type, decimals=2):
@@ -380,6 +463,91 @@ def show_basic_stats(player):
         show_stat("Blocks", format_optional_number(player.get("total_blocks", player["shotsBlockedByPlayer"])))
 
 
+def show_nhl_edge_tracking(player):
+    """
+    Show NHL EDGE Player & Puck Tracking stats.
+    """
+    edge_data = load_nhl_edge_data(get_player_id(player))
+
+    with st.expander("NHL EDGE Tracking"):
+        st.caption(
+            "Official NHL EDGE tracking data. These stats measure physical tools and puck-tracking events, not the same things as MoneyPuck impact stats."
+        )
+
+        if edge_data is None:
+            st.write("NHL EDGE data is not available for this player right now.")
+            return
+
+        high_danger_summary = get_shot_location_summary(edge_data, "high")
+
+        skating_speed = get_nested_value(edge_data, ["skatingSpeed", "speedMax"])
+        speed_bursts = get_nested_value(edge_data, ["skatingSpeed", "burstsOver20"])
+        top_shot_speed = edge_data.get("topShotSpeed", {})
+        total_distance = edge_data.get("totalDistanceSkated", {})
+        distance_max_game = edge_data.get("distanceMaxGame", {})
+        zone_time = edge_data.get("zoneTimeDetails", {})
+
+        first_row = st.columns(4)
+
+        with first_row[0]:
+            show_stat(
+                "Max Speed",
+                f"{format_edge_number(skating_speed.get('imperial') if skating_speed else None)} mph",
+            )
+            st.caption(f"{format_edge_percentile(skating_speed.get('percentile') if skating_speed else None)} percentile")
+
+        with first_row[1]:
+            show_stat(
+                "Speed Bursts 20+ mph",
+                format_edge_number(speed_bursts.get("value") if speed_bursts else None, 0),
+            )
+            st.caption(f"{format_edge_percentile(speed_bursts.get('percentile') if speed_bursts else None)} percentile")
+
+        with first_row[2]:
+            show_stat(
+                "Hardest Shot",
+                f"{format_edge_number(top_shot_speed.get('imperial'))} mph",
+            )
+            st.caption(f"{format_edge_percentile(top_shot_speed.get('percentile'))} percentile")
+
+        with first_row[3]:
+            show_stat(
+                "Total Distance",
+                f"{format_edge_number(total_distance.get('imperial'))} mi",
+            )
+            st.caption(f"{format_edge_percentile(total_distance.get('percentile'))} percentile")
+
+        second_row = st.columns(4)
+
+        with second_row[0]:
+            show_stat(
+                "Most Miles In Game",
+                f"{format_edge_number(distance_max_game.get('imperial'))} mi",
+            )
+            st.caption(f"{format_edge_percentile(distance_max_game.get('percentile'))} percentile")
+
+        with second_row[1]:
+            show_stat(
+                "High-Danger Shots",
+                format_edge_number(high_danger_summary.get("shots"), 0),
+            )
+            st.caption(f"{format_edge_percentile(high_danger_summary.get('shotsPercentile'))} percentile")
+
+        with second_row[2]:
+            show_stat(
+                "O-Zone Time",
+                format_optional_percentage(zone_time.get("offensiveZonePctg")),
+            )
+            st.caption(f"{format_edge_percentile(zone_time.get('offensiveZonePercentile'))} percentile")
+
+        with second_row[3]:
+            show_stat(
+                "5v5 O-Zone Time",
+                format_optional_percentage(zone_time.get("offensiveZoneEvPctg")),
+            )
+            st.caption(f"{format_edge_percentile(zone_time.get('offensiveZoneEvPercentile'))} percentile")
+
+
 def show_power_play_stats(player):
     """
     Show important power-play stats.
@@ -624,6 +792,7 @@ def main():
 
     show_player_header(selected_player)
     show_basic_stats(selected_player)
+    show_nhl_edge_tracking(selected_player)
     show_power_play_stats(selected_player)
     show_penalty_kill_stats(selected_player)
     show_percentiles(selected_player)
