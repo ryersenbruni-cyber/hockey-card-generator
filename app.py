@@ -1125,9 +1125,18 @@ def show_player_comparison(player_data, selected_player):
             y=comparison_table["Stat"],
             x=comparison_table["Player 1 Percentile"],
             orientation="h",
-            marker_color=first_colors,
+            marker={
+                "color": first_colors,
+                "line": {"color": "rgba(255,255,255,0.45)", "width": 1},
+            },
             text=comparison_table["Player 1 Value"],
             textposition="outside",
+            hovertemplate=(
+                f"{first_player_name}<br>"
+                "%{y}<br>"
+                "Percentile: %{x:.0f}<br>"
+                "Value: %{text}<extra></extra>"
+            ),
         )
     )
     comparison_chart.add_trace(
@@ -1136,9 +1145,19 @@ def show_player_comparison(player_data, selected_player):
             y=comparison_table["Stat"],
             x=comparison_table["Player 2 Percentile"],
             orientation="h",
-            marker_color=second_colors,
+            marker={
+                "color": second_colors,
+                "line": {"color": "rgba(255,255,255,0.85)", "width": 1},
+                "pattern": {"shape": "/", "fgcolor": "rgba(255,255,255,0.85)", "size": 8},
+            },
             text=comparison_table["Player 2 Value"],
             textposition="outside",
+            hovertemplate=(
+                f"{second_player_name}<br>"
+                "%{y}<br>"
+                "Percentile: %{x:.0f}<br>"
+                "Value: %{text}<extra></extra>"
+            ),
         )
     )
     comparison_chart.update_layout(
@@ -1148,9 +1167,22 @@ def show_player_comparison(player_data, selected_player):
         xaxis_title="Same-position percentile",
         xaxis_range=[0, 105],
         yaxis_autorange="reversed",
-        legend_orientation="h",
+        showlegend=False,
     )
 
+    st.markdown(
+        f"""
+        <div style="margin-bottom: 8px;">
+            <span style="font-weight: 700;">Solid bars:</span> {first_player_name}
+            &nbsp;&nbsp;|&nbsp;&nbsp;
+            <span style="font-weight: 700;">Striped bars:</span> {second_player_name}
+        </div>
+        <div style="font-size: 0.9rem; opacity: 0.8; margin-bottom: 6px;">
+            Bar color shows how strong the percentile is. The pattern shows which player is which.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
     st.plotly_chart(comparison_chart, use_container_width=True)
     st.caption("Lower is better for 5v5 On-Ice xGA/60. Higher is better for the other stats.")
 
