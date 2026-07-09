@@ -740,6 +740,37 @@ def average_percentiles(percentiles):
     return sum(clean_percentiles) / len(clean_percentiles)
 
 
+def clamp_score(score):
+    """
+    Keep an impact score between 0 and 100.
+    """
+    if score is None or pd.isna(score):
+        return None
+
+    return max(0, min(100, score))
+
+
+def adjust_score_for_usage(raw_score, usage_percentile, low_usage_trust, high_usage_trust):
+    """
+    Adjust a score based on how much the player is trusted by usage.
+
+    A low-minute player gets pulled toward 50.
+    A high-minute player gets pushed slightly farther from 50.
+    """
+    if raw_score is None or pd.isna(raw_score):
+        return None
+
+    if usage_percentile is None or pd.isna(usage_percentile):
+        return raw_score
+
+    usage_trust = low_usage_trust + (usage_percentile / 100) * (
+        high_usage_trust - low_usage_trust
+    )
+    adjusted_score = 50 + (raw_score - 50) * usage_trust
+
+    return clamp_score(adjusted_score)
+
+
 def get_player_percentile(player_data, player, column_name, higher_is_better=True):
     """
     Get one same-position percentile for the selected player.
@@ -749,6 +780,28 @@ def get_player_percentile(player_data, player, column_name, higher_is_better=Tru
         column_name,
         player,
         higher_is_better,
+    )
+
+
+def get_special_teams_toi_percentile(player_data, player):
+    """
+    Rank a player's combined PP and PK ice time against the same position group.
+    """
+    comparison_data = player_data[player_data["position_group"] == player["position_group"]].copy()
+
+    comparison_data["special_teams_toi_per_game"] = (
+        comparison_data["pp_toi_per_game"].fillna(0)
+        + comparison_data["pk_toi_per_game"].fillna(0)
+    )
+    player_special_teams_toi = (
+        0 if pd.isna(player.get("pp_toi_per_game", pd.NA)) else player.get("pp_toi_per_game", 0)
+    ) + (
+        0 if pd.isna(player.get("pk_toi_per_game", pd.NA)) else player.get("pk_toi_per_game", 0)
+    )
+
+    return calculate_series_percentile(
+        comparison_data["special_teams_toi_per_game"],
+        player_special_teams_toi,
     )
 
 
@@ -814,10 +867,38 @@ def calculate_impact_scores(player, player_data):
             ]
         )
 
-    offensive_impact = average_percentiles(offensive_components)
-    play_driving_impact = average_percentiles(play_driving_components)
-    defensive_impact = average_percentiles(defensive_components)
-    special_teams_impact = average_percentiles(special_teams_components)
+    total_toi_percentile = get_player_percentile(player_data, player, "total_toi_per_game")
+    special_teams_toi_percentile = get_special_teams_toi_percentile(player_data, player)
+
+    raw_offensive_impact = average_percentiles(offensive_components)
+    raw_play_driving_impact = average_percentiles(play_driving_components)
+    raw_defensive_impact = average_percentiles(defensive_components)
+    raw_special_teams_impact = average_percentiles(special_teams_components)
+
+    offensive_impact = adjust_score_for_usage(
+        raw_offensive_impact,
+        total_toi_percentile,
+        0.75,
+        1.20,
+    )
+    play_driving_impact = adjust_score_for_usage(
+        raw_play_driving_impact,
+        total_toi_percentile,
+        0.75,
+        1.20,
+    )
+    defensive_impact = adjust_score_for_usage(
+        raw_defensive_impact,
+        total_toi_percentile,
+        0.75,
+        1.20,
+    )
+    special_teams_impact = adjust_score_for_usage(
+        raw_special_teams_impact,
+        special_teams_toi_percentile,
+        0.60,
+        1.30,
+    )
     player_value_score = average_percentiles(
         [
             offensive_impact,
@@ -886,6 +967,9 @@ def show_impact_scores(player, player_data):
             show_impact_card(label, score)
 
     with st.expander("How these scores are built"):
+        total_toi_percentile = get_player_percentile(player_data, player, "total_toi_per_game")
+        special_teams_toi_percentile = get_special_teams_toi_percentile(player_data, player)
+
         st.write(
             "Offensive Impact uses scoring, shooting, expected goals, and creation microstats."
         )
@@ -897,6 +981,18 @@ def show_impact_scores(player, player_data):
         )
         st.write(
             "Special Teams Impact uses power-play production, power-play on-ice xG%, and penalty-kill prevention stats."
+        )
+        st.write(
+            "TOI adjustment: normal impact scores use a trust range from 75% to 120%. That means low-usage players get pulled toward 50, while high-usage players can move farther from 50."
+        )
+        st.write(
+            "Special teams adjustment: Special Teams Impact uses a stronger trust range from 60% to 130%, because small PP/PK samples can be much noisier."
+        )
+        st.write(
+            f"This player's total TOI usage rank is {format_percentile_label(total_toi_percentile)}."
+        )
+        st.write(
+            f"This player's special teams TOI usage rank is {format_percentile_label(special_teams_toi_percentile)}."
         )
 
 
