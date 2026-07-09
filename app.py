@@ -1836,15 +1836,19 @@ def show_player_comparison(player_data, selected_player):
     )
 
 
-def show_percentiles(player):
+def show_percentiles(player, player_data):
     """
     Show the most important percentile rankings.
     """
     st.header("5v5 Percentile Rankings")
+    impact_scores = calculate_impact_scores(player, player_data)
+    player_value_score = impact_scores["Player Value Score"]
 
     percentile_columns = st.columns(2)
 
     with percentile_columns[0]:
+        if player_value_score is not None and not pd.isna(player_value_score):
+            show_percentile("Player Value Score", player_value_score)
         show_percentile("Points/60", player["points_per_60_percentile"])
         show_percentile("Expected Goals/60", player["expected_goals_per_60_percentile"])
 
@@ -2037,7 +2041,7 @@ def main():
         show_player_header(selected_player)
         show_basic_stats(selected_player)
         show_impact_scores(selected_player, player_data)
-        show_percentiles(selected_player)
+        show_percentiles(selected_player, player_data)
         show_microstats(selected_player)
         show_special_teams_stats(selected_player, player_data)
         show_rate_stats(selected_player, player_data)
