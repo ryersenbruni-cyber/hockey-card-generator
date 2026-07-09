@@ -914,16 +914,16 @@ def calculate_impact_scores(player, player_data):
     microstats_row = get_microstats_row(player)
 
     offensive_components = [
-        (get_player_percentile(player_data, player, "points_per_60"), 0.35),
-        (get_player_percentile(player_data, player, "onIce_xGoalsPercentage"), 0.25),
-        (get_player_percentile(player_data, player, "expected_goals_per_60"), 0.20),
-        (get_player_percentile(player_data, player, "shots_per_60"), 0.10),
+        (get_player_percentile(player_data, player, "points_per_60"), 0.40),
+        (get_player_percentile(player_data, player, "expected_goals_per_60"), 0.25),
+        (get_player_percentile(player_data, player, "shots_per_60"), 0.15),
+        (get_player_percentile(player_data, player, "onIce_xGoalsPercentage"), 0.05),
     ]
 
     play_driving_components = [
-        (get_player_percentile(player_data, player, "onIce_xGoalsPercentage"), 0.45),
-        (get_player_percentile(player_data, player, "onIce_corsiPercentage"), 0.20),
-        (get_player_percentile(player_data, player, "onIce_fenwickPercentage"), 0.20),
+        (get_player_percentile(player_data, player, "onIce_xGoalsPercentage"), 0.30),
+        (get_player_percentile(player_data, player, "onIce_corsiPercentage"), 0.15),
+        (get_player_percentile(player_data, player, "onIce_fenwickPercentage"), 0.15),
     ]
 
     power_play_score = weighted_average_percentiles(
@@ -971,16 +971,16 @@ def calculate_impact_scores(player, player_data):
     if microstats_row is not None:
         offensive_components.extend(
             [
-                (get_micro_rate_percentile(microstats_row, "Chances"), 0.04),
-                (get_micro_rate_percentile(microstats_row, "Primary Shot Assists"), 0.03),
-                (get_micro_rate_percentile(microstats_row, "Chance Assists"), 0.03),
+                (get_micro_rate_percentile(microstats_row, "Chances"), 0.05),
+                (get_micro_rate_percentile(microstats_row, "Primary Shot Assists"), 0.05),
+                (get_micro_rate_percentile(microstats_row, "Chance Assists"), 0.05),
             ]
         )
         play_driving_components.extend(
             [
-                (get_micro_rate_percentile(microstats_row, "Zone Entries"), 0.05),
-                (get_micro_percentage_percentile(microstats_row, "Carries", "Zone Entries"), 0.05),
-                (get_micro_percentage_percentile(microstats_row, "Exits w/ Possession", "Zone Exits"), 0.05),
+                (get_micro_rate_percentile(microstats_row, "Zone Entries"), 0.13),
+                (get_micro_percentage_percentile(microstats_row, "Carries", "Zone Entries"), 0.13),
+                (get_micro_percentage_percentile(microstats_row, "Exits w/ Possession", "Zone Exits"), 0.14),
             ]
         )
         if player["position_group"] == "D":
@@ -1077,8 +1077,8 @@ def calculate_impact_scores(player, player_data):
 
     player_value_score = weighted_average_percentiles(
         [
-            (offensive_impact, 0.35),
-            (defensive_impact, 0.30),
+            (offensive_impact, 0.40),
+            (defensive_impact, 0.25),
             (play_driving_impact, 0.20),
             (special_teams_overall_score, 0.15),
         ]
@@ -1153,10 +1153,10 @@ def show_impact_scores(player, player_data):
         special_teams_toi_per_game = get_special_teams_toi_per_game(player)
 
         st.write(
-            "Offensive Impact is weighted toward Points/60, 5v5 On-Ice xG%, and individual expected goals. Shots and creation microstats are supporting pieces."
+            "Offensive Impact is weighted toward individual production and creation: Points/60, individual expected goals, shots, and offensive microstats. 5v5 On-Ice xG% is now only a small supporting piece."
         )
         st.write(
-            "5v5 Driving Impact is weighted most heavily toward 5v5 On-Ice xG%, with Corsi%, Fenwick%, entries, and exits supporting it."
+            "5v5 Driving Impact still uses on-ice xG%, Corsi%, and Fenwick%, but microstats like entries and possession exits now carry more of the grade."
         )
         st.write(
             "Defensive Impact is position-specific. Defensemen get more credit for denials, retrievals, retrievals leading to exits, possession exits, and 5v5 play-driving. Centers get more credit for takeaways, low-zone support, PK value, retrievals, and forecheck pressure. Wingers get more credit for takeaways, forecheck pressure, and shot/chance suppression."
@@ -1165,7 +1165,7 @@ def show_impact_scores(player, player_data):
             "Special Teams Impact gives equal room to power-play value and penalty-kill value. PP points/60 and PP on-ice xG% drive the PP side; PK xGA/60 drives the PK side."
         )
         st.write(
-            "Player Value Score is weighted as: Offensive Impact 35%, Defensive Impact 30%, 5v5 Driving Impact 20%, and Special Teams Impact 15%."
+            "Player Value Score is weighted as: Offensive Impact 40%, Defensive Impact 25%, 5v5 Driving Impact 20%, and Special Teams Impact 15%."
         )
         st.write(
             "Sample-size rule: players under 10 games show NA. Players from 10-24 games have scores pulled toward 50 with a 65% trust factor. Players at 25+ games get normal scoring."
