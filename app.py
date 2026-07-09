@@ -18,6 +18,9 @@ scouting_report_helpers = importlib.reload(scouting_report_helpers)
 DATA_FILE_PATH = "cleaned_data/skaters_strengths.csv"
 NHL_EDGE_BASE_URL = "https://api-web.nhle.com/v1/edge"
 MICROSTATS_FILE_PATH = "data/all_three_zones_2025_26_regular.csv"
+MINIMUM_GAMES_FOR_IMPACT = 10
+FULL_TRUST_GAMES = 25
+SMALL_SAMPLE_TRUST = 0.65
 SPECIAL_TEAMS_TOI_MINIMUM = 0.75
 LIMITED_SPECIAL_TEAMS_OVERALL_SCORE = 45
 
@@ -474,8 +477,14 @@ def calculate_player_data_percentile(player_data, column_name, player, higher_is
     if column_name not in player_data.columns or column_name not in player:
         return None
 
+    if player.get("games_played", 0) < MINIMUM_GAMES_FOR_IMPACT:
+        return None
+
     player_value = player[column_name]
-    comparison_data = player_data[player_data["position_group"] == player["position_group"]]
+    comparison_data = player_data[
+        (player_data["position_group"] == player["position_group"])
+        & (player_data["games_played"] >= MINIMUM_GAMES_FOR_IMPACT)
+    ]
 
     return calculate_series_percentile(
         comparison_data[column_name],
@@ -798,6 +807,38 @@ def adjust_score_for_usage(raw_score, usage_percentile, low_usage_trust, high_us
     return clamp_score(adjusted_score)
 
 
+def shrink_score_toward_average(score, trust_factor):
+    """
+    Pull a small-sample score closer to 50.
+    """
+    if score is None or pd.isna(score):
+        return None
+
+    return clamp_score(50 + (score - 50) * trust_factor)
+
+
+def add_defensive_usage_boost(defensive_score, total_toi_percentile):
+    """
+    Give a small defensive boost to players trusted with heavier minutes.
+    """
+    if defensive_score is None or pd.isna(defensive_score):
+        return None
+
+    if total_toi_percentile is None or pd.isna(total_toi_percentile):
+        return defensive_score
+
+    if total_toi_percentile >= 85:
+        return clamp_score(defensive_score + 5)
+
+    if total_toi_percentile >= 70:
+        return clamp_score(defensive_score + 3)
+
+    if total_toi_percentile >= 55:
+        return clamp_score(defensive_score + 1)
+
+    return defensive_score
+
+
 def get_player_percentile(player_data, player, column_name, higher_is_better=True):
     """
     Get one same-position percentile for the selected player.
@@ -814,7 +855,13 @@ def get_special_teams_toi_percentile(player_data, player):
     """
     Rank a player's combined PP and PK ice time against the same position group.
     """
-    comparison_data = player_data[player_data["position_group"] == player["position_group"]].copy()
+    if player.get("games_played", 0) < MINIMUM_GAMES_FOR_IMPACT:
+        return None
+
+    comparison_data = player_data[
+        (player_data["position_group"] == player["position_group"])
+        & (player_data["games_played"] >= MINIMUM_GAMES_FOR_IMPACT)
+    ].copy()
 
     comparison_data["special_teams_toi_per_game"] = (
         comparison_data["pp_toi_per_game"].fillna(0)
@@ -855,6 +902,15 @@ def calculate_impact_scores(player, player_data):
     These are not WAR. They are beginner-friendly value scores built from
     same-position percentiles.
     """
+    if player.get("games_played", 0) < MINIMUM_GAMES_FOR_IMPACT:
+        return {
+            "Player Value Score": None,
+            "Offensive Impact": None,
+            "5v5 Driving Impact": None,
+            "Defensive Impact": None,
+            "Special Teams Impact": None,
+        }
+
     microstats_row = get_microstats_row(player)
 
     offensive_components = [
@@ -870,21 +926,6 @@ def calculate_impact_scores(player, player_data):
         (get_player_percentile(player_data, player, "onIce_fenwickPercentage"), 0.20),
     ]
 
-    if player["position_group"] == "D":
-        defensive_components = [
-            (get_player_percentile(player_data, player, "on_ice_xgoals_against_per_60", False), 0.25),
-            (get_player_percentile(player_data, player, "onIce_xGoalsPercentage"), 0.15),
-            (get_player_percentile(player_data, player, "blocks_per_60"), 0.025),
-            (get_player_percentile(player_data, player, "takeaways_per_60"), 0.025),
-        ]
-    else:
-        defensive_components = [
-            (get_player_percentile(player_data, player, "on_ice_xgoals_against_per_60", False), 0.35),
-            (get_player_percentile(player_data, player, "onIce_xGoalsPercentage"), 0.15),
-            (get_player_percentile(player_data, player, "takeaways_per_60"), 0.15),
-            (get_player_percentile(player_data, player, "blocks_per_60"), 0.05),
-        ]
-
     power_play_score = weighted_average_percentiles(
         [
             (get_player_percentile(player_data, player, "pp_points_per_60"), 0.60),
@@ -898,6 +939,30 @@ def calculate_impact_scores(player, player_data):
             (get_player_percentile(player_data, player, "pk_takeaways"), 0.15),
         ]
     )
+
+    if player["position_group"] == "D":
+        defensive_components = [
+            (get_player_percentile(player_data, player, "on_ice_xgoals_against_per_60", False), 0.20),
+            (get_player_percentile(player_data, player, "onIce_xGoalsPercentage"), 0.15),
+            (get_player_percentile(player_data, player, "onIce_fenwickPercentage"), 0.10),
+        ]
+    elif player["position"] == "C":
+        defensive_components = [
+            (get_player_percentile(player_data, player, "on_ice_xgoals_against_per_60", False), 0.25),
+            (get_player_percentile(player_data, player, "onIce_xGoalsPercentage"), 0.20),
+            (get_player_percentile(player_data, player, "onIce_fenwickPercentage"), 0.10),
+            (get_player_percentile(player_data, player, "takeaways_per_60"), 0.10),
+            (penalty_kill_score, 0.10),
+        ]
+    else:
+        defensive_components = [
+            (get_player_percentile(player_data, player, "on_ice_xgoals_against_per_60", False), 0.25),
+            (get_player_percentile(player_data, player, "onIce_xGoalsPercentage"), 0.20),
+            (get_player_percentile(player_data, player, "onIce_fenwickPercentage"), 0.10),
+            (get_player_percentile(player_data, player, "takeaways_per_60"), 0.15),
+            (penalty_kill_score, 0.10),
+        ]
+
     special_teams_components = [
         (power_play_score, 0.50),
         (penalty_kill_score, 0.50),
@@ -941,20 +1006,19 @@ def calculate_impact_scores(player, player_data):
                     ),
                 ]
             )
+        elif player["position"] == "C":
+            defensive_components.extend(
+                [
+                    (get_micro_rate_percentile(microstats_row, "Forecheck Pressures"), 0.10),
+                    (get_micro_rate_percentile(microstats_row, "DZ Retrievals"), 0.10),
+                    (get_micro_percentage_percentile(microstats_row, "Exits w/ Possession", "Zone Exits"), 0.05),
+                ]
+            )
         else:
             defensive_components.extend(
                 [
-                    (get_micro_rate_percentile(microstats_row, "Denials"), 0.10),
-                    (get_micro_rate_percentile(microstats_row, "DZ Retrievals"), 0.05),
-                    (get_micro_rate_percentile(microstats_row, "Forecheck Pressures"), 0.10),
-                    (
-                        get_micro_percentage_percentile(
-                            microstats_row,
-                            "Exits w/ Possession",
-                            "Zone Exits",
-                        ),
-                        0.05,
-                    ),
+                    (get_micro_rate_percentile(microstats_row, "Forecheck Pressures"), 0.15),
+                    (get_micro_percentage_percentile(microstats_row, "Exits w/ Possession", "Zone Exits"), 0.05),
                 ]
             )
 
@@ -974,21 +1038,22 @@ def calculate_impact_scores(player, player_data):
     offensive_impact = adjust_score_for_usage(
         raw_offensive_impact,
         total_toi_percentile,
-        0.75,
-        1.20,
+        0.80,
+        1.15,
     )
     play_driving_impact = adjust_score_for_usage(
         raw_play_driving_impact,
         total_toi_percentile,
-        0.75,
-        1.20,
+        0.80,
+        1.15,
     )
     defensive_impact = adjust_score_for_usage(
         raw_defensive_impact,
         total_toi_percentile,
-        0.75,
-        1.20,
+        0.80,
+        1.15,
     )
+    defensive_impact = add_defensive_usage_boost(defensive_impact, total_toi_percentile)
     special_teams_impact = None
 
     if has_enough_special_teams_time:
@@ -998,6 +1063,12 @@ def calculate_impact_scores(player, player_data):
             0.60,
             1.30,
         )
+
+    if player.get("games_played", 0) < FULL_TRUST_GAMES:
+        offensive_impact = shrink_score_toward_average(offensive_impact, SMALL_SAMPLE_TRUST)
+        play_driving_impact = shrink_score_toward_average(play_driving_impact, SMALL_SAMPLE_TRUST)
+        defensive_impact = shrink_score_toward_average(defensive_impact, SMALL_SAMPLE_TRUST)
+        special_teams_impact = shrink_score_toward_average(special_teams_impact, SMALL_SAMPLE_TRUST)
 
     special_teams_overall_score = special_teams_impact
 
@@ -1064,6 +1135,11 @@ def show_impact_scores(player, player_data):
         "These are WAR-like scores, not true WAR. They combine same-position percentiles from MoneyPuck, special teams, and microstats when available."
     )
 
+    if player.get("games_played", 0) < MINIMUM_GAMES_FOR_IMPACT:
+        st.info(
+            f"Impact Scores need at least {MINIMUM_GAMES_FOR_IMPACT} games. This player has only {int(player['games_played'])} games, so the scores show as NA."
+        )
+
     impact_scores = calculate_impact_scores(player, player_data)
     score_columns = st.columns(5)
 
@@ -1083,7 +1159,7 @@ def show_impact_scores(player, player_data):
             "5v5 Driving Impact is weighted most heavily toward 5v5 On-Ice xG%, with Corsi%, Fenwick%, entries, and exits supporting it."
         )
         st.write(
-            "Defensive Impact is position-specific. Defensemen get more credit for denials, retrievals, retrievals leading to exits, and possession exits. Forwards get more credit for takeaways, forecheck pressure, and shot/chance suppression."
+            "Defensive Impact is position-specific. Defensemen get more credit for denials, retrievals, retrievals leading to exits, possession exits, and 5v5 play-driving. Centers get more credit for takeaways, low-zone support, PK value, retrievals, and forecheck pressure. Wingers get more credit for takeaways, forecheck pressure, and shot/chance suppression."
         )
         st.write(
             "Special Teams Impact gives equal room to power-play value and penalty-kill value. PP points/60 and PP on-ice xG% drive the PP side; PK xGA/60 drives the PK side."
@@ -1092,7 +1168,16 @@ def show_impact_scores(player, player_data):
             "Player Value Score is weighted as: Offensive Impact 35%, Defensive Impact 30%, 5v5 Driving Impact 20%, and Special Teams Impact 15%."
         )
         st.write(
-            "TOI adjustment: normal impact scores use a trust range from 75% to 120%. That means low-usage players get pulled toward 50, while high-usage players can move farther from 50."
+            "Sample-size rule: players under 10 games show NA. Players from 10-24 games have scores pulled toward 50 with a 65% trust factor. Players at 25+ games get normal scoring."
+        )
+        st.write(
+            "Percentile rule: players under 10 games are also removed from comparison pools, so tiny samples do not distort rankings."
+        )
+        st.write(
+            "TOI adjustment: normal impact scores use a trust range from 80% to 115%. That means low-usage players get pulled toward 50, while high-usage players can move slightly farther from 50."
+        )
+        st.write(
+            "Defensive usage boost: players in the 55th, 70th, and 85th total-TOI percentiles can receive small defensive boosts of +1, +3, and +5."
         )
         st.write(
             "Special teams TOI adjustment: PP/PK ice time is used as a confidence adjustment with a 60% to 130% trust range. It matters more than even-strength TOI because special-teams samples are noisier, but it is not one of the main skill stats."
