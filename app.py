@@ -1514,6 +1514,153 @@ def build_single_player_comparison_chart(comparison_table, player_name, percenti
     return player_chart
 
 
+def format_score_for_card(score):
+    """
+    Format an impact score for a compact player card.
+    """
+    if score is None or pd.isna(score):
+        return "NA"
+
+    return str(round(score))
+
+
+def show_comparison_player_card(player, player_data):
+    """
+    Show a compact player card for the comparison page.
+    """
+    impact_scores = calculate_impact_scores(player, player_data)
+    position = format_position(player["position"])
+    season_range = format_season_range(player["season"])
+    team_logo_url = get_team_logo_url(player["team"])
+    headshot_image = load_headshot_or_blank(player)
+
+    header_columns = st.columns([1, 1, 3])
+
+    with header_columns[0]:
+        st.image(headshot_image, width=90)
+
+    with header_columns[1]:
+        st.image(team_logo_url, width=80)
+
+    with header_columns[2]:
+        st.subheader(player["name"])
+        st.caption(f"{player['team']} | {position} | {season_range}")
+
+    if player.get("games_played", 0) < MINIMUM_GAMES_FOR_IMPACT:
+        st.info(f"Small sample: {int(player['games_played'])} games")
+
+    score_columns = st.columns(2)
+
+    with score_columns[0]:
+        show_stat("Player Value", format_score_for_card(impact_scores["Player Value Score"]))
+        show_stat("Offense", format_score_for_card(impact_scores["Offensive Impact"]))
+        show_stat("Defense", format_score_for_card(impact_scores["Defensive Impact"]))
+
+    with score_columns[1]:
+        show_stat("5v5 Driving", format_score_for_card(impact_scores["5v5 Driving Impact"]))
+        show_stat("Special Teams", format_score_for_card(impact_scores["Special Teams Impact"]))
+        show_stat("TOI/G", format_optional_minutes(player.get("total_toi_per_game", pd.NA)))
+
+    stat_columns = st.columns(4)
+
+    with stat_columns[0]:
+        show_stat("Goals", format_optional_number(player.get("total_goals", player["I_F_goals"])))
+    with stat_columns[1]:
+        show_stat("Points", format_optional_number(player.get("total_points", player["I_F_points"])))
+    with stat_columns[2]:
+        show_stat("Shots", format_optional_number(player.get("total_shots", player["I_F_shotsOnGoal"])))
+    with stat_columns[3]:
+        show_stat("5v5 xG%", format_optional_percentage(player.get("onIce_xGoalsPercentage", pd.NA)))
+
+    st.write(generate_scouting_report(player, player_data))
+
+
+def build_comparison_rows(player_data, first_player, second_player):
+    """
+    Build the broad detailed comparison table.
+    """
+    first_scores = calculate_impact_scores(first_player, player_data)
+    second_scores = calculate_impact_scores(second_player, player_data)
+
+    comparison_rows = []
+
+    impact_stats = [
+        "Player Value Score",
+        "Offensive Impact",
+        "Defensive Impact",
+        "5v5 Driving Impact",
+        "Special Teams Impact",
+    ]
+
+    for stat_name in impact_stats:
+        comparison_rows.append(
+            {
+                "Stat": stat_name,
+                "Player 1 Value": format_score_for_card(first_scores[stat_name]),
+                "Player 1 Percentile": first_scores[stat_name],
+                "Player 2 Value": format_score_for_card(second_scores[stat_name]),
+                "Player 2 Percentile": second_scores[stat_name],
+            }
+        )
+
+    comparison_stats = [
+        ("Games", "games_played", "number", True),
+        ("TOI/G", "total_toi_per_game", "number", True),
+        ("Goals", "total_goals", "number", True),
+        ("Points", "total_points", "number", True),
+        ("Shots", "total_shots", "number", True),
+        ("Hits", "total_hits", "number", True),
+        ("Blocks", "total_blocks", "number", True),
+        ("Takeaways", "total_takeaways", "number", True),
+        ("Goals/Game", "goals_per_game", "number", True),
+        ("Points/60", "points_per_60", "number", True),
+        ("Shots/60", "shots_per_60", "number", True),
+        ("Individual xG/60", "expected_goals_per_60", "number", True),
+        ("5v5 On-Ice xG%", "onIce_xGoalsPercentage", "percentage", True),
+        ("5v5 On-Ice xGF/60", "on_ice_xgoals_for_per_60", "number", True),
+        ("5v5 On-Ice xGA/60", "on_ice_xgoals_against_per_60", "number", False),
+        ("5v5 Corsi%", "onIce_corsiPercentage", "percentage", True),
+        ("5v5 Fenwick%", "onIce_fenwickPercentage", "percentage", True),
+        ("PP TOI/G", "pp_toi_per_game", "number", True),
+        ("PP Points", "pp_points", "number", True),
+        ("PP Points/60", "pp_points_per_60", "number", True),
+        ("PP On-Ice xG%", "pp_on_ice_xgoals_percentage", "percentage", True),
+        ("PK TOI/G", "pk_toi_per_game", "number", True),
+        ("SH Points", "pk_points", "number", True),
+        ("PK xGA/60", "pk_xgoals_against_per_60", "number", False),
+        ("PK Blocks", "pk_blocks", "number", True),
+        ("PK Takeaways", "pk_takeaways", "number", True),
+    ]
+
+    for stat_name, column_name, value_type, higher_is_better in comparison_stats:
+        first_value = first_player.get(column_name, pd.NA)
+        second_value = second_player.get(column_name, pd.NA)
+        first_percentile = calculate_player_data_percentile(
+            player_data,
+            column_name,
+            first_player,
+            higher_is_better,
+        )
+        second_percentile = calculate_player_data_percentile(
+            player_data,
+            column_name,
+            second_player,
+            higher_is_better,
+        )
+
+        comparison_rows.append(
+            {
+                "Stat": stat_name,
+                "Player 1 Value": format_comparison_value(first_value, value_type),
+                "Player 1 Percentile": first_percentile,
+                "Player 2 Value": format_comparison_value(second_value, value_type),
+                "Player 2 Percentile": second_percentile,
+            }
+        )
+
+    return comparison_rows
+
+
 def show_player_comparison(player_data, selected_player):
     """
     Let the user compare two players side by side.
@@ -1577,78 +1724,23 @@ def show_player_comparison(player_data, selected_player):
     first_player = season_data[season_data["player_label"] == first_player_label].iloc[0]
     second_player = season_data[season_data["player_label"] == second_player_label].iloc[0]
 
-    comparison_stats = [
-        ("Goals/Game", "goals_per_game", "number", True),
-        ("Points/60", "points_per_60", "number", True),
-        ("Shots/60", "shots_per_60", "number", True),
-        ("Individual xG/60", "expected_goals_per_60", "number", True),
-        ("5v5 On-Ice xG%", "onIce_xGoalsPercentage", "percentage", True),
-        ("5v5 On-Ice xGF/60", "on_ice_xgoals_for_per_60", "number", True),
-        ("5v5 On-Ice xGA/60", "on_ice_xgoals_against_per_60", "number", False),
-        ("5v5 Corsi%", "onIce_corsiPercentage", "percentage", True),
-        ("5v5 Fenwick%", "onIce_fenwickPercentage", "percentage", True),
-        ("Hits/60", "hits_per_60", "number", True),
-        ("Blocks/60", "blocks_per_60", "number", True),
-    ]
-
-    comparison_rows = []
-
-    for stat_name, column_name, value_type, higher_is_better in comparison_stats:
-        first_value = first_player[column_name]
-        second_value = second_player[column_name]
-        first_percentile = calculate_player_data_percentile(
-            season_data,
-            column_name,
-            first_player,
-            higher_is_better,
-        )
-        second_percentile = calculate_player_data_percentile(
-            season_data,
-            column_name,
-            second_player,
-            higher_is_better,
-        )
-
-        comparison_rows.append(
-            {
-                "Stat": stat_name,
-                "Player 1 Value": format_comparison_value(first_value, value_type),
-                "Player 1 Percentile": first_percentile,
-                "Player 2 Value": format_comparison_value(second_value, value_type),
-                "Player 2 Percentile": second_percentile,
-            }
-        )
-
-    comparison_table = pd.DataFrame(comparison_rows)
-
     first_player_name = first_player["name"]
     second_player_name = second_player["name"]
-    first_chart = build_single_player_comparison_chart(
-        comparison_table,
-        first_player_name,
-        "Player 1 Percentile",
-        "Player 1 Value",
-    )
-    second_chart = build_single_player_comparison_chart(
-        comparison_table,
-        second_player_name,
-        "Player 2 Percentile",
-        "Player 2 Value",
-    )
+    comparison_rows = build_comparison_rows(season_data, first_player, second_player)
 
-    st.caption("Bar color shows how strong the percentile is.")
+    st.caption("Quick summary cards are shown first. The detailed stat table is below.")
 
-    first_chart_column, second_chart_column = st.columns(2)
+    first_card_column, second_card_column = st.columns(2)
 
-    with first_chart_column:
-        st.subheader(first_player_name)
-        st.plotly_chart(first_chart, use_container_width=True)
+    with first_card_column:
+        show_comparison_player_card(first_player, season_data)
 
-    with second_chart_column:
-        st.subheader(second_player_name)
-        st.plotly_chart(second_chart, use_container_width=True)
+    with second_card_column:
+        show_comparison_player_card(second_player, season_data)
 
-    st.caption("Lower is better for 5v5 On-Ice xGA/60. Higher is better for the other stats.")
+    st.divider()
+    st.subheader("Detailed Comparison Table")
+    st.caption("Lower is better for 5v5 On-Ice xGA/60 and PK xGA/60. Higher is better for the other stats.")
 
     first_value_column = f"{first_player_name} Value"
     first_rank_column = f"{first_player_name} Rank"
@@ -1699,6 +1791,137 @@ def show_percentiles(player):
         show_percentile("5v5 Fenwick %", player["onIce_fenwickPercentage_percentile"])
 
 
+def describe_impact_score(score):
+    """
+    Convert a numeric impact score into plain hockey language.
+    """
+    if score is None or pd.isna(score):
+        return "not enough sample"
+
+    if score >= 85:
+        return "elite"
+
+    if score >= 70:
+        return "strong"
+
+    if score >= 55:
+        return "solid"
+
+    if score >= 45:
+        return "average"
+
+    if score >= 35:
+        return "below average"
+
+    return "poor"
+
+
+def classify_player_role(player, impact_scores):
+    """
+    Choose a simple role label from the new impact scores.
+    """
+    offense = impact_scores["Offensive Impact"]
+    defense = impact_scores["Defensive Impact"]
+    player_value = impact_scores["Player Value Score"]
+
+    if player["position_group"] == "D":
+        if player_value is not None and player_value >= 75:
+            return "top-pair defenseman"
+
+        if player_value is not None and player_value >= 60:
+            return "top-four defenseman"
+
+        if offense is not None and offense >= 70:
+            return "offensive defenseman"
+
+        if defense is not None and defense >= 70:
+            return "defensive defenseman"
+
+        return "depth defenseman"
+
+    if player_value is not None and player_value >= 80:
+        return "first-line forward"
+
+    if offense is not None and offense >= 65 and defense is not None and defense >= 70:
+        return "two-way top-six forward"
+
+    if offense is not None and offense >= 70:
+        return "top-six offensive forward"
+
+    if defense is not None and defense >= 70:
+        return "defensive specialist"
+
+    if player_value is not None and player_value >= 55:
+        return "middle-six forward"
+
+    return "depth forward"
+
+
+def generate_scouting_report(player, player_data):
+    """
+    Generate a concise scouting report using the newest impact scores.
+    """
+    games_played = int(player["games_played"])
+
+    if games_played < MINIMUM_GAMES_FOR_IMPACT:
+        return (
+            f"{player['name']} has only played {games_played} games, so the sample is too small for a reliable scouting read. "
+            "The app shows Impact Scores as NA because tiny samples can create misleading ratings. "
+            "Once he reaches the minimum sample, the report will use offense, defense, 5v5 driving, and special-teams impact."
+        )
+
+    impact_scores = calculate_impact_scores(player, player_data)
+    offense = impact_scores["Offensive Impact"]
+    defense = impact_scores["Defensive Impact"]
+    driving = impact_scores["5v5 Driving Impact"]
+    special_teams = impact_scores["Special Teams Impact"]
+    player_value = impact_scores["Player Value Score"]
+    role = classify_player_role(player, impact_scores)
+
+    offense_level = describe_impact_score(offense)
+    defense_level = describe_impact_score(defense)
+    driving_level = describe_impact_score(driving)
+    special_teams_level = describe_impact_score(special_teams)
+
+    if offense is not None and offense >= 70:
+        offensive_sentence = f"Offensively, {player['name']} profiles as a {offense_level} contributor, with his production and chance-impact indicators driving the grade."
+    elif offense is not None and offense < 45:
+        offensive_sentence = f"Offensively, {player['name']} has a limited profile in this sample and does not show strong production or chance-creation impact."
+    else:
+        offensive_sentence = f"Offensively, {player['name']} grades as a {offense_level} contributor rather than a clear driver."
+
+    if driving is not None and driving >= 70:
+        driving_sentence = "At 5-on-5, his team tends to tilt play positively in his minutes, especially by controlling chance quality."
+    elif driving is not None and driving < 45:
+        driving_sentence = "At 5-on-5, the play-driving results are a concern and suggest his minutes have not consistently moved play in the right direction."
+    else:
+        driving_sentence = f"At 5-on-5, his play-driving profile is {driving_level}, with neither dominant nor severely damaging results."
+
+    if defense is not None and defense >= 70:
+        defensive_sentence = "Defensively, the model views him as a strong option, with the position-adjusted formula giving credit for suppression, usage, and defensive microstats where available."
+    elif defense is not None and defense < 45:
+        defensive_sentence = "Defensively, his profile is still a weak point, though this version tries not to over-punish team-driven xGA results."
+    else:
+        defensive_sentence = f"Defensively, he grades as {defense_level}, so the results are closer to playable than standout."
+
+    if special_teams is None:
+        special_teams_sentence = "Special teams value is marked NA because he has not played enough combined PP and PK minutes to grade it fairly."
+    else:
+        special_teams_sentence = f"His special-teams profile grades as {special_teams_level}, with PP and PK impact separated from the main even-strength read."
+
+    role_sentence = f"Overall, his Player Value Score fits best as a {role}."
+
+    return " ".join(
+        [
+            offensive_sentence,
+            driving_sentence,
+            defensive_sentence,
+            special_teams_sentence,
+            role_sentence,
+        ]
+    )
+
+
 def show_strengths_and_weaknesses(player):
     """
     Show the plain-English player notes from Milestone 7.
@@ -1716,13 +1939,13 @@ def show_strengths_and_weaknesses(player):
         st.write(player["weaknesses"])
 
 
-def show_scouting_report(player):
+def show_scouting_report(player, player_data):
     """
     Show the generated scouting report.
     """
     st.header("Scouting Report")
 
-    scouting_report = scouting_report_helpers.generate_scouting_report(player)
+    scouting_report = generate_scouting_report(player, player_data)
 
     st.write(scouting_report)
 
@@ -1755,7 +1978,7 @@ def main():
         show_microstats(selected_player)
         show_special_teams_stats(selected_player, player_data)
         show_rate_stats(selected_player, player_data)
-        show_scouting_report(selected_player)
+        show_scouting_report(selected_player, player_data)
 
     with comparison_tab:
         show_player_comparison(player_data, selected_player)
