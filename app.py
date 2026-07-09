@@ -248,6 +248,50 @@ def calculate_micro_percentage(row, numerator_column, denominator_column):
     return f"{round(numerator / denominator * 100, 1)}%"
 
 
+def get_micro_rate_percentile(row, column_name, higher_is_better=True):
+    """
+    Rank one player's microstat per-60 rate against the microstats file.
+    """
+    microstats_data = load_microstats_data()
+
+    if microstats_data is None or column_name not in microstats_data.columns:
+        return None
+
+    value = calculate_micro_per_60(row, column_name)
+
+    if value == "NA":
+        return None
+
+    rates = microstats_data[column_name] / microstats_data["5v5 TOI"] * 60
+
+    return calculate_series_percentile(rates, value, higher_is_better)
+
+
+def get_micro_percentage_percentile(row, numerator_column, denominator_column, higher_is_better=True):
+    """
+    Rank one player's microstat percentage against the microstats file.
+    """
+    microstats_data = load_microstats_data()
+
+    if (
+        microstats_data is None
+        or numerator_column not in microstats_data.columns
+        or denominator_column not in microstats_data.columns
+    ):
+        return None
+
+    numerator = safe_micro_value(row, numerator_column)
+    denominator = safe_micro_value(row, denominator_column)
+
+    if denominator <= 0:
+        return None
+
+    value = numerator / denominator
+    percentages = microstats_data[numerator_column] / microstats_data[denominator_column]
+
+    return calculate_series_percentile(percentages, value, higher_is_better)
+
+
 def get_microstats_row(player):
     """
     Find the selected player's All Three Zones microstats row.
@@ -319,6 +363,94 @@ def get_percentile_color(value):
         return "#f28c28"
 
     return "#d62828"
+
+
+def format_percentile_label(percentile):
+    """
+    Format a percentile as readable text.
+    """
+    if percentile is None or pd.isna(percentile):
+        return "No ranking"
+
+    return f"{round(percentile)}th percentile"
+
+
+def show_quality_indicator(percentile):
+    """
+    Show a small colored label that explains how good a stat is.
+    """
+    if percentile is None or pd.isna(percentile):
+        st.caption("No ranking")
+        return
+
+    percentile = round(percentile)
+    color = get_percentile_color(percentile)
+
+    st.markdown(
+        f"""
+        <div style="
+            display: inline-block;
+            margin-top: -8px;
+            margin-bottom: 12px;
+            padding: 3px 9px;
+            border-radius: 999px;
+            background-color: {color};
+            color: white;
+            font-size: 0.78rem;
+            font-weight: 700;">
+            {percentile}th percentile
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def edge_percentile_to_100(edge_percentile):
+    """
+    Convert NHL EDGE percentile format into our 0-100 format.
+    """
+    if edge_percentile is None or pd.isna(edge_percentile):
+        return None
+
+    return edge_percentile * 100
+
+
+def calculate_series_percentile(series, value, higher_is_better=True):
+    """
+    Calculate where one value ranks inside a group of numbers.
+
+    If lower_is_better, we flip the percentile so lower values get better colors.
+    """
+    if value is None or pd.isna(value):
+        return None
+
+    clean_series = pd.to_numeric(series, errors="coerce").dropna()
+
+    if clean_series.empty:
+        return None
+
+    percentile = (clean_series <= value).mean() * 100
+
+    if not higher_is_better:
+        percentile = 100 - percentile
+
+    return percentile
+
+
+def calculate_player_data_percentile(player_data, column_name, player, higher_is_better=True):
+    """
+    Rank one player against players in the app dataset.
+    """
+    if column_name not in player_data.columns or column_name not in player:
+        return None
+
+    player_value = player[column_name]
+
+    return calculate_series_percentile(
+        player_data[column_name],
+        player_value,
+        higher_is_better,
+    )
 
 
 def show_percentile(label, value):
@@ -592,28 +724,28 @@ def show_nhl_edge_tracking(player):
                 "Max Speed",
                 f"{format_edge_number(skating_speed.get('imperial') if skating_speed else None)} mph",
             )
-            st.caption(f"{format_edge_percentile(skating_speed.get('percentile') if skating_speed else None)} percentile")
+            show_quality_indicator(edge_percentile_to_100(skating_speed.get("percentile") if skating_speed else None))
 
         with first_row[1]:
             show_stat(
                 "Speed Bursts 20+ mph",
                 format_edge_number(speed_bursts.get("value") if speed_bursts else None, 0),
             )
-            st.caption(f"{format_edge_percentile(speed_bursts.get('percentile') if speed_bursts else None)} percentile")
+            show_quality_indicator(edge_percentile_to_100(speed_bursts.get("percentile") if speed_bursts else None))
 
         with first_row[2]:
             show_stat(
                 "Hardest Shot",
                 f"{format_edge_number(top_shot_speed.get('imperial'))} mph",
             )
-            st.caption(f"{format_edge_percentile(top_shot_speed.get('percentile'))} percentile")
+            show_quality_indicator(edge_percentile_to_100(top_shot_speed.get("percentile")))
 
         with first_row[3]:
             show_stat(
                 "Total Distance",
                 f"{format_edge_number(total_distance.get('imperial'))} mi",
             )
-            st.caption(f"{format_edge_percentile(total_distance.get('percentile'))} percentile")
+            show_quality_indicator(edge_percentile_to_100(total_distance.get("percentile")))
 
         second_row = st.columns(4)
 
@@ -622,28 +754,28 @@ def show_nhl_edge_tracking(player):
                 "Most Miles In Game",
                 f"{format_edge_number(distance_max_game.get('imperial'))} mi",
             )
-            st.caption(f"{format_edge_percentile(distance_max_game.get('percentile'))} percentile")
+            show_quality_indicator(edge_percentile_to_100(distance_max_game.get("percentile")))
 
         with second_row[1]:
             show_stat(
                 "High-Danger Shots",
                 format_edge_number(high_danger_summary.get("shots"), 0),
             )
-            st.caption(f"{format_edge_percentile(high_danger_summary.get('shotsPercentile'))} percentile")
+            show_quality_indicator(edge_percentile_to_100(high_danger_summary.get("shotsPercentile")))
 
         with second_row[2]:
             show_stat(
                 "O-Zone Time",
                 format_optional_percentage(zone_time.get("offensiveZonePctg")),
             )
-            st.caption(f"{format_edge_percentile(zone_time.get('offensiveZonePercentile'))} percentile")
+            show_quality_indicator(edge_percentile_to_100(zone_time.get("offensiveZonePercentile")))
 
         with second_row[3]:
             show_stat(
                 "5v5 O-Zone Time",
                 format_optional_percentage(zone_time.get("offensiveZoneEvPctg")),
             )
-            st.caption(f"{format_edge_percentile(zone_time.get('offensiveZoneEvPercentile'))} percentile")
+            show_quality_indicator(edge_percentile_to_100(zone_time.get("offensiveZoneEvPercentile")))
 
 
 def show_microstats(player):
@@ -666,51 +798,67 @@ def show_microstats(player):
 
         with offense_columns[0]:
             show_stat("Shots/60", calculate_micro_per_60(microstats_row, "Shots"))
+            show_quality_indicator(get_micro_rate_percentile(microstats_row, "Shots"))
         with offense_columns[1]:
             show_stat("Chances/60", calculate_micro_per_60(microstats_row, "Chances"))
+            show_quality_indicator(get_micro_rate_percentile(microstats_row, "Chances"))
         with offense_columns[2]:
             show_stat("Primary Shot Assists/60", calculate_micro_per_60(microstats_row, "Primary Shot Assists"))
+            show_quality_indicator(get_micro_rate_percentile(microstats_row, "Primary Shot Assists"))
         with offense_columns[3]:
             show_stat("Chance Assists/60", calculate_micro_per_60(microstats_row, "Chance Assists"))
+            show_quality_indicator(get_micro_rate_percentile(microstats_row, "Chance Assists"))
 
         st.subheader("Transition")
         transition_columns = st.columns(4)
 
         with transition_columns[0]:
             show_stat("Zone Entries/60", calculate_micro_per_60(microstats_row, "Zone Entries"))
+            show_quality_indicator(get_micro_rate_percentile(microstats_row, "Zone Entries"))
         with transition_columns[1]:
             show_stat("Controlled Entry%", calculate_micro_percentage(microstats_row, "Carries", "Zone Entries"))
+            show_quality_indicator(get_micro_percentage_percentile(microstats_row, "Carries", "Zone Entries"))
         with transition_columns[2]:
             show_stat("Entry Pass Plays/60", calculate_micro_per_60(microstats_row, "Entries w/ Passing Play"))
+            show_quality_indicator(get_micro_rate_percentile(microstats_row, "Entries w/ Passing Play"))
         with transition_columns[3]:
             show_stat("Entry Chances/60", calculate_micro_per_60(microstats_row, "Carries w/ Chances"))
+            show_quality_indicator(get_micro_rate_percentile(microstats_row, "Carries w/ Chances"))
 
         st.subheader("Rush, Forecheck, and Exits")
         puck_movement_columns = st.columns(4)
 
         with puck_movement_columns[0]:
             show_stat("Rush Shots/60", calculate_micro_per_60(microstats_row, "Shots off Rush"))
+            show_quality_indicator(get_micro_rate_percentile(microstats_row, "Shots off Rush"))
         with puck_movement_columns[1]:
             show_stat("Forecheck Pressures/60", calculate_micro_per_60(microstats_row, "Forecheck Pressures"))
+            show_quality_indicator(get_micro_rate_percentile(microstats_row, "Forecheck Pressures"))
         with puck_movement_columns[2]:
             show_stat("Zone Exits/60", calculate_micro_per_60(microstats_row, "Zone Exits"))
+            show_quality_indicator(get_micro_rate_percentile(microstats_row, "Zone Exits"))
         with puck_movement_columns[3]:
             show_stat("Possession Exit%", calculate_micro_percentage(microstats_row, "Exits w/ Possession", "Zone Exits"))
+            show_quality_indicator(get_micro_percentage_percentile(microstats_row, "Exits w/ Possession", "Zone Exits"))
 
         st.subheader("Defense and Breakouts")
         defense_columns = st.columns(4)
 
         with defense_columns[0]:
             show_stat("DZ Puck Touches/60", calculate_micro_per_60(microstats_row, "DZ Puck Touches"))
+            show_quality_indicator(get_micro_rate_percentile(microstats_row, "DZ Puck Touches"))
         with defense_columns[1]:
             show_stat("DZ Retrievals/60", calculate_micro_per_60(microstats_row, "DZ Retrievals"))
+            show_quality_indicator(get_micro_rate_percentile(microstats_row, "DZ Retrievals"))
         with defense_columns[2]:
             show_stat("Retrievals to Exits%", calculate_micro_percentage(microstats_row, "Retrievals Leading to Exits", "DZ Retrievals"))
+            show_quality_indicator(get_micro_percentage_percentile(microstats_row, "Retrievals Leading to Exits", "DZ Retrievals"))
         with defense_columns[3]:
             show_stat("Entry Denials/60", calculate_micro_per_60(microstats_row, "Denials"))
+            show_quality_indicator(get_micro_rate_percentile(microstats_row, "Denials"))
 
 
-def show_power_play_stats(player):
+def show_power_play_stats(player, player_data):
     """
     Show important power-play stats.
     """
@@ -719,23 +867,29 @@ def show_power_play_stats(player):
 
         with pp_columns[0]:
             show_stat("PP TOI/G", format_optional_minutes(player.get("pp_toi_per_game", pd.NA)))
+            show_quality_indicator(calculate_player_data_percentile(player_data, "pp_toi_per_game", player))
             show_stat("PP Goals", format_optional_number(player.get("pp_goals", pd.NA)))
+            show_quality_indicator(calculate_player_data_percentile(player_data, "pp_goals", player))
 
         with pp_columns[1]:
             show_stat("PP Points", format_optional_number(player.get("pp_points", pd.NA)))
+            show_quality_indicator(calculate_player_data_percentile(player_data, "pp_points", player))
             show_stat("PP Points/60", format_optional_number(player.get("pp_points_per_60", pd.NA), 2))
+            show_quality_indicator(calculate_player_data_percentile(player_data, "pp_points_per_60", player))
 
         with pp_columns[2]:
             show_stat("PP Shots", format_optional_number(player.get("pp_shots", pd.NA)))
+            show_quality_indicator(calculate_player_data_percentile(player_data, "pp_shots", player))
             show_stat(
                 "PP On-Ice xG%",
                 format_optional_percentage(
                     player.get("pp_on_ice_xgoals_percentage", pd.NA)
                 ),
             )
+            show_quality_indicator(calculate_player_data_percentile(player_data, "pp_on_ice_xgoals_percentage", player))
 
 
-def show_penalty_kill_stats(player):
+def show_penalty_kill_stats(player, player_data):
     """
     Show important penalty-kill stats.
 
@@ -746,18 +900,24 @@ def show_penalty_kill_stats(player):
 
         with pk_columns[0]:
             show_stat("PK TOI/G", format_optional_minutes(player.get("pk_toi_per_game", pd.NA)))
+            show_quality_indicator(calculate_player_data_percentile(player_data, "pk_toi_per_game", player))
             show_stat("SH Goals", format_optional_number(player.get("pk_goals", pd.NA)))
+            show_quality_indicator(calculate_player_data_percentile(player_data, "pk_goals", player))
 
         with pk_columns[1]:
             show_stat("SH Points", format_optional_number(player.get("pk_points", pd.NA)))
+            show_quality_indicator(calculate_player_data_percentile(player_data, "pk_points", player))
             show_stat("PK Blocks", format_optional_number(player.get("pk_blocks", pd.NA)))
+            show_quality_indicator(calculate_player_data_percentile(player_data, "pk_blocks", player))
 
         with pk_columns[2]:
             show_stat("PK Takeaways", format_optional_number(player.get("pk_takeaways", pd.NA)))
+            show_quality_indicator(calculate_player_data_percentile(player_data, "pk_takeaways", player))
             show_stat("PK xGA/60", format_optional_number(player.get("pk_xgoals_against_per_60", pd.NA), 2))
+            show_quality_indicator(calculate_player_data_percentile(player_data, "pk_xgoals_against_per_60", player, higher_is_better=False))
 
 
-def show_rate_stats(player):
+def show_rate_stats(player, player_data):
     """
     Show per-game and per-60 stats.
     """
@@ -769,24 +929,32 @@ def show_rate_stats(player):
 
             with stat_columns[0]:
                 show_stat("Goals/Game", player["goals_per_game"])
+                show_quality_indicator(calculate_player_data_percentile(player_data, "goals_per_game", player))
             with stat_columns[1]:
                 show_stat("Points/Game", player["points_per_game"])
+                show_quality_indicator(player["points_per_game_percentile"])
             with stat_columns[2]:
                 show_stat("Shots/Game", player["shots_per_game"])
+                show_quality_indicator(calculate_player_data_percentile(player_data, "shots_per_game", player))
             with stat_columns[3]:
                 show_stat("xGoals/Game", player["expected_goals_per_game"])
+                show_quality_indicator(calculate_player_data_percentile(player_data, "expected_goals_per_game", player))
 
         with per_60_tab:
             stat_columns = st.columns(4)
 
             with stat_columns[0]:
                 show_stat("Goals/60", player["goals_per_60"])
+                show_quality_indicator(player["goals_per_60_percentile"])
             with stat_columns[1]:
                 show_stat("Points/60", player["points_per_60"])
+                show_quality_indicator(player["points_per_60_percentile"])
             with stat_columns[2]:
                 show_stat("Shots/60", player["shots_per_60"])
+                show_quality_indicator(player["shots_per_60_percentile"])
             with stat_columns[3]:
                 show_stat("xGoals/60", player["expected_goals_per_60"])
+                show_quality_indicator(player["expected_goals_per_60_percentile"])
 
 
 def show_player_comparison(player_data, selected_player):
@@ -956,10 +1124,10 @@ def main():
     show_basic_stats(selected_player)
     show_nhl_edge_tracking(selected_player)
     show_microstats(selected_player)
-    show_power_play_stats(selected_player)
-    show_penalty_kill_stats(selected_player)
+    show_power_play_stats(selected_player, player_data)
+    show_penalty_kill_stats(selected_player, player_data)
     show_percentiles(selected_player)
-    show_rate_stats(selected_player)
+    show_rate_stats(selected_player, player_data)
     show_scouting_report(selected_player)
 
 
