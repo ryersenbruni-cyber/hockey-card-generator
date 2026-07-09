@@ -921,22 +921,25 @@ def calculate_impact_scores(player, player_data):
     ]
 
     play_driving_components = [
-        (get_player_percentile(player_data, player, "onIce_xGoalsPercentage"), 0.30),
-        (get_player_percentile(player_data, player, "onIce_corsiPercentage"), 0.15),
-        (get_player_percentile(player_data, player, "onIce_fenwickPercentage"), 0.15),
+        (get_player_percentile(player_data, player, "onIce_xGoalsPercentage"), 0.20),
+        (get_player_percentile(player_data, player, "onIce_corsiPercentage"), 0.10),
+        (get_player_percentile(player_data, player, "onIce_fenwickPercentage"), 0.10),
     ]
 
     power_play_score = weighted_average_percentiles(
         [
-            (get_player_percentile(player_data, player, "pp_points_per_60"), 0.60),
-            (get_player_percentile(player_data, player, "pp_on_ice_xgoals_percentage"), 0.40),
+            (get_player_percentile(player_data, player, "pp_points_per_60"), 0.45),
+            (get_player_percentile(player_data, player, "pp_shots"), 0.20),
+            (get_player_percentile(player_data, player, "pp_goals"), 0.15),
+            (get_player_percentile(player_data, player, "pp_on_ice_xgoals_percentage"), 0.20),
         ]
     )
     penalty_kill_score = weighted_average_percentiles(
         [
-            (get_player_percentile(player_data, player, "pk_xgoals_against_per_60", False), 0.60),
+            (get_player_percentile(player_data, player, "pk_xgoals_against_per_60", False), 0.35),
             (get_player_percentile(player_data, player, "pk_blocks"), 0.25),
-            (get_player_percentile(player_data, player, "pk_takeaways"), 0.15),
+            (get_player_percentile(player_data, player, "pk_takeaways"), 0.20),
+            (get_player_percentile(player_data, player, "pk_points"), 0.20),
         ]
     )
 
@@ -948,11 +951,11 @@ def calculate_impact_scores(player, player_data):
         ]
     elif player["position"] == "C":
         defensive_components = [
-            (get_player_percentile(player_data, player, "on_ice_xgoals_against_per_60", False), 0.25),
-            (get_player_percentile(player_data, player, "onIce_xGoalsPercentage"), 0.20),
-            (get_player_percentile(player_data, player, "onIce_fenwickPercentage"), 0.10),
-            (get_player_percentile(player_data, player, "takeaways_per_60"), 0.10),
-            (penalty_kill_score, 0.10),
+            (get_player_percentile(player_data, player, "on_ice_xgoals_against_per_60", False), 0.15),
+            (get_player_percentile(player_data, player, "onIce_xGoalsPercentage"), 0.10),
+            (get_player_percentile(player_data, player, "onIce_fenwickPercentage"), 0.05),
+            (get_player_percentile(player_data, player, "takeaways_per_60"), 0.20),
+            (penalty_kill_score, 0.15),
         ]
     else:
         defensive_components = [
@@ -978,9 +981,9 @@ def calculate_impact_scores(player, player_data):
         )
         play_driving_components.extend(
             [
-                (get_micro_rate_percentile(microstats_row, "Zone Entries"), 0.13),
-                (get_micro_percentage_percentile(microstats_row, "Carries", "Zone Entries"), 0.13),
-                (get_micro_percentage_percentile(microstats_row, "Exits w/ Possession", "Zone Exits"), 0.14),
+                (get_micro_rate_percentile(microstats_row, "Zone Entries"), 0.20),
+                (get_micro_percentage_percentile(microstats_row, "Carries", "Zone Entries"), 0.20),
+                (get_micro_percentage_percentile(microstats_row, "Exits w/ Possession", "Zone Exits"), 0.20),
             ]
         )
         if player["position_group"] == "D":
@@ -1009,9 +1012,9 @@ def calculate_impact_scores(player, player_data):
         elif player["position"] == "C":
             defensive_components.extend(
                 [
-                    (get_micro_rate_percentile(microstats_row, "Forecheck Pressures"), 0.10),
+                    (get_micro_rate_percentile(microstats_row, "Forecheck Pressures"), 0.15),
                     (get_micro_rate_percentile(microstats_row, "DZ Retrievals"), 0.10),
-                    (get_micro_percentage_percentile(microstats_row, "Exits w/ Possession", "Zone Exits"), 0.05),
+                    (get_micro_percentage_percentile(microstats_row, "Exits w/ Possession", "Zone Exits"), 0.10),
                 ]
             )
         else:
@@ -1162,7 +1165,7 @@ def show_impact_scores(player, player_data):
             "Defensive Impact is position-specific. Defensemen get more credit for denials, retrievals, retrievals leading to exits, possession exits, and 5v5 play-driving. Centers get more credit for takeaways, low-zone support, PK value, retrievals, and forecheck pressure. Wingers get more credit for takeaways, forecheck pressure, and shot/chance suppression."
         )
         st.write(
-            "Special Teams Impact gives equal room to power-play value and penalty-kill value. PP points/60 and PP on-ice xG% drive the PP side; PK xGA/60 drives the PK side."
+            "Special Teams Impact gives equal room to power-play value and penalty-kill value. It now leans more on individual PP production, PP shot/goals involvement, PK blocks, PK takeaways, and shorthanded points, while team-driven PP xG% and PK xGA/60 are smaller pieces."
         )
         st.write(
             "Player Value Score is weighted as: Offensive Impact 40%, Defensive Impact 25%, 5v5 Driving Impact 20%, and Special Teams Impact 15%."
