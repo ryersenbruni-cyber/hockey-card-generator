@@ -3,6 +3,7 @@ from pathlib import Path
 import re
 
 import pandas as pd
+import plotly.graph_objects as go
 import requests
 import streamlit as st
 from PIL import Image, ImageDraw
@@ -1006,94 +1007,182 @@ def show_player_comparison(player_data, selected_player):
     Most comparison stats are rates so players with different ice time
     can still be compared fairly.
     """
-    with st.expander("Compare two players"):
-        seasons = sorted(player_data["season"].unique())
-        season_labels = {format_season_range(season): season for season in seasons}
-        selected_player_season_label = format_season_range(selected_player["season"])
-        selected_season_index = list(season_labels.keys()).index(selected_player_season_label)
+    st.header("Compare Players")
+    st.caption(
+        "Bars show same-position percentiles, so defensemen are compared to defensemen and forwards to forwards."
+    )
+
+    seasons = sorted(player_data["season"].unique())
+    season_labels = {format_season_range(season): season for season in seasons}
+    selected_player_season_label = format_season_range(selected_player["season"])
+    selected_season_index = list(season_labels.keys()).index(selected_player_season_label)
+
+    season_column, first_player_column, second_player_column = st.columns(3)
+
+    with season_column:
         selected_season_label = st.selectbox(
             "Choose comparison season",
             list(season_labels.keys()),
             index=selected_season_index,
             key="comparison_season",
         )
-        selected_season = season_labels[selected_season_label]
 
-        season_data = player_data[player_data["season"] == selected_season].copy()
-        season_data["player_label"] = season_data.apply(get_player_label, axis=1)
-        season_data = season_data.sort_values("player_label")
+    selected_season = season_labels[selected_season_label]
+    season_data = player_data[player_data["season"] == selected_season].copy()
+    season_data["player_label"] = season_data.apply(get_player_label, axis=1)
+    season_data = season_data.sort_values("player_label")
 
-        player_labels = season_data["player_label"].tolist()
-        selected_player_label = get_player_label(selected_player)
-        first_player_index = 0
+    player_labels = season_data["player_label"].tolist()
+    selected_player_label = get_player_label(selected_player)
+    first_player_index = 0
 
-        if selected_player_label in player_labels:
-            first_player_index = player_labels.index(selected_player_label)
+    if selected_player_label in player_labels:
+        first_player_index = player_labels.index(selected_player_label)
 
+    second_player_index = 1 if len(player_labels) > 1 else 0
+
+    if second_player_index == first_player_index and len(player_labels) > 1:
+        second_player_index = 0
+
+    with first_player_column:
         first_player_label = st.selectbox(
-            "Choose first comparison player",
+            "First player",
             player_labels,
             index=first_player_index,
-            key=f"first_comparison_player_{get_player_id(selected_player)}",
+            key=f"first_comparison_player_{get_player_id(selected_player)}_{selected_season}",
         )
+
+    with second_player_column:
         second_player_label = st.selectbox(
-            "Choose second comparison player",
+            "Second player",
             player_labels,
-            index=1 if len(player_labels) > 1 else 0,
-            key="second_comparison_player",
+            index=second_player_index,
+            key=f"second_comparison_player_{selected_season}",
         )
 
-        first_player = season_data[season_data["player_label"] == first_player_label].iloc[0]
-        second_player = season_data[season_data["player_label"] == second_player_label].iloc[0]
+    first_player = season_data[season_data["player_label"] == first_player_label].iloc[0]
+    second_player = season_data[season_data["player_label"] == second_player_label].iloc[0]
 
-        comparison_stats = [
-            ("Goals/Game", "goals_per_game", "number"),
-            ("Points/Game", "points_per_game", "number"),
-            ("Shots/60", "shots_per_60", "number"),
-            ("Individual xG/60", "expected_goals_per_60", "number"),
-            ("5v5 On-Ice xG%", "onIce_xGoalsPercentage", "percentage"),
-            ("5v5 On-Ice xGF/60", "on_ice_xgoals_for_per_60", "number"),
-            ("5v5 On-Ice xGA/60", "on_ice_xgoals_against_per_60", "number"),
-            ("5v5 Corsi%", "onIce_corsiPercentage", "percentage"),
-            ("5v5 Fenwick%", "onIce_fenwickPercentage", "percentage"),
-            ("Hits/60", "hits_per_60", "number"),
-            ("Blocks/60", "blocks_per_60", "number"),
-        ]
+    comparison_stats = [
+        ("Goals/Game", "goals_per_game", "number", True),
+        ("Points/60", "points_per_60", "number", True),
+        ("Shots/60", "shots_per_60", "number", True),
+        ("Individual xG/60", "expected_goals_per_60", "number", True),
+        ("5v5 On-Ice xG%", "onIce_xGoalsPercentage", "percentage", True),
+        ("5v5 On-Ice xGF/60", "on_ice_xgoals_for_per_60", "number", True),
+        ("5v5 On-Ice xGA/60", "on_ice_xgoals_against_per_60", "number", False),
+        ("5v5 Corsi%", "onIce_corsiPercentage", "percentage", True),
+        ("5v5 Fenwick%", "onIce_fenwickPercentage", "percentage", True),
+        ("Hits/60", "hits_per_60", "number", True),
+        ("Blocks/60", "blocks_per_60", "number", True),
+    ]
 
-        comparison_rows = []
+    comparison_rows = []
 
-        for stat_name, column_name, value_type in comparison_stats:
-            first_value = first_player[column_name]
-            second_value = second_player[column_name]
-
-            comparison_rows.append(
-                {
-                    "Stat": stat_name,
-                    first_player["name"]: format_comparison_value(
-                        first_value,
-                        value_type,
-                    ),
-                    second_player["name"]: format_comparison_value(
-                        second_value,
-                        value_type,
-                    ),
-                }
-            )
-
-        comparison_table = pd.DataFrame(comparison_rows)
-
-        st.caption("Most stats are better when higher. For 5v5 On-Ice xGA/60, lower is better.")
-
-        st.dataframe(
-            comparison_table,
-            column_config={
-                "Stat": st.column_config.TextColumn("Stat", width="medium"),
-                first_player["name"]: st.column_config.TextColumn(first_player["name"], width="small"),
-                second_player["name"]: st.column_config.TextColumn(second_player["name"], width="small"),
-            },
-            hide_index=True,
-            use_container_width=True,
+    for stat_name, column_name, value_type, higher_is_better in comparison_stats:
+        first_value = first_player[column_name]
+        second_value = second_player[column_name]
+        first_percentile = calculate_player_data_percentile(
+            season_data,
+            column_name,
+            first_player,
+            higher_is_better,
         )
+        second_percentile = calculate_player_data_percentile(
+            season_data,
+            column_name,
+            second_player,
+            higher_is_better,
+        )
+
+        comparison_rows.append(
+            {
+                "Stat": stat_name,
+                "Player 1 Value": format_comparison_value(first_value, value_type),
+                "Player 1 Percentile": first_percentile,
+                "Player 2 Value": format_comparison_value(second_value, value_type),
+                "Player 2 Percentile": second_percentile,
+            }
+        )
+
+    comparison_table = pd.DataFrame(comparison_rows)
+
+    first_player_name = first_player["name"]
+    second_player_name = second_player["name"]
+    first_colors = [
+        get_percentile_color(value) if not pd.isna(value) else "#8a8f98"
+        for value in comparison_table["Player 1 Percentile"]
+    ]
+    second_colors = [
+        get_percentile_color(value) if not pd.isna(value) else "#8a8f98"
+        for value in comparison_table["Player 2 Percentile"]
+    ]
+
+    comparison_chart = go.Figure()
+    comparison_chart.add_trace(
+        go.Bar(
+            name=first_player_name,
+            y=comparison_table["Stat"],
+            x=comparison_table["Player 1 Percentile"],
+            orientation="h",
+            marker_color=first_colors,
+            text=comparison_table["Player 1 Value"],
+            textposition="outside",
+        )
+    )
+    comparison_chart.add_trace(
+        go.Bar(
+            name=second_player_name,
+            y=comparison_table["Stat"],
+            x=comparison_table["Player 2 Percentile"],
+            orientation="h",
+            marker_color=second_colors,
+            text=comparison_table["Player 2 Value"],
+            textposition="outside",
+        )
+    )
+    comparison_chart.update_layout(
+        barmode="group",
+        height=560,
+        margin={"l": 20, "r": 20, "t": 40, "b": 20},
+        xaxis_title="Same-position percentile",
+        xaxis_range=[0, 105],
+        yaxis_autorange="reversed",
+        legend_orientation="h",
+    )
+
+    st.plotly_chart(comparison_chart, use_container_width=True)
+    st.caption("Lower is better for 5v5 On-Ice xGA/60. Higher is better for the other stats.")
+
+    first_value_column = f"{first_player_name} Value"
+    first_rank_column = f"{first_player_name} Rank"
+    second_value_column = f"{second_player_name} Value"
+    second_rank_column = f"{second_player_name} Rank"
+
+    if first_player_name == second_player_name:
+        first_value_column = f"{first_player_name} Value 1"
+        first_rank_column = f"{first_player_name} Rank 1"
+        second_value_column = f"{second_player_name} Value 2"
+        second_rank_column = f"{second_player_name} Rank 2"
+
+    table_rows = []
+
+    for row in comparison_rows:
+        table_rows.append(
+            {
+                "Stat": row["Stat"],
+                first_value_column: row["Player 1 Value"],
+                first_rank_column: format_percentile_label(row["Player 1 Percentile"]),
+                second_value_column: row["Player 2 Value"],
+                second_rank_column: format_percentile_label(row["Player 2 Percentile"]),
+            }
+        )
+
+    st.dataframe(
+        pd.DataFrame(table_rows),
+        hide_index=True,
+        use_container_width=True,
+    )
 
 
 def show_percentiles(player):
@@ -1105,7 +1194,6 @@ def show_percentiles(player):
     percentile_columns = st.columns(2)
 
     with percentile_columns[0]:
-        show_percentile("Points/Game", player["points_per_game_percentile"])
         show_percentile("Points/60", player["points_per_60_percentile"])
         show_percentile("Expected Goals/60", player["expected_goals_per_60_percentile"])
 
@@ -1160,15 +1248,20 @@ def main():
 
     player_data = load_player_data()
     selected_player = get_selected_player(player_data)
-    show_player_comparison(player_data, selected_player)
 
-    show_player_header(selected_player)
-    show_basic_stats(selected_player)
-    show_microstats(selected_player)
-    show_special_teams_stats(selected_player, player_data)
-    show_percentiles(selected_player)
-    show_rate_stats(selected_player, player_data)
-    show_scouting_report(selected_player)
+    player_card_tab, comparison_tab = st.tabs(["Player Card", "Compare Players"])
+
+    with player_card_tab:
+        show_player_header(selected_player)
+        show_basic_stats(selected_player)
+        show_percentiles(selected_player)
+        show_microstats(selected_player)
+        show_special_teams_stats(selected_player, player_data)
+        show_rate_stats(selected_player, player_data)
+        show_scouting_report(selected_player)
+
+    with comparison_tab:
+        show_player_comparison(player_data, selected_player)
 
 
 if __name__ == "__main__":
