@@ -1000,6 +1000,46 @@ def show_rate_stats(player, player_data):
                 show_quality_indicator(player["expected_goals_per_60_percentile"])
 
 
+def build_single_player_comparison_chart(comparison_table, player_name, percentile_column, value_column):
+    """
+    Build one player's comparison chart.
+
+    Each chart uses the same stat list, so the left and right sides are easy to compare.
+    """
+    bar_colors = [
+        get_percentile_color(value) if not pd.isna(value) else "#8a8f98"
+        for value in comparison_table[percentile_column]
+    ]
+
+    player_chart = go.Figure()
+    player_chart.add_trace(
+        go.Bar(
+            y=comparison_table["Stat"],
+            x=comparison_table[percentile_column],
+            orientation="h",
+            marker_color=bar_colors,
+            text=comparison_table[value_column],
+            textposition="outside",
+            hovertemplate=(
+                f"{player_name}<br>"
+                "%{y}<br>"
+                "Percentile: %{x:.0f}<br>"
+                "Value: %{text}<extra></extra>"
+            ),
+        )
+    )
+    player_chart.update_layout(
+        height=560,
+        margin={"l": 10, "r": 20, "t": 10, "b": 20},
+        xaxis_title="Same-position percentile",
+        xaxis_range=[0, 105],
+        yaxis_autorange="reversed",
+        showlegend=False,
+    )
+
+    return player_chart
+
+
 def show_player_comparison(player_data, selected_player):
     """
     Let the user compare two players side by side.
@@ -1109,81 +1149,31 @@ def show_player_comparison(player_data, selected_player):
 
     first_player_name = first_player["name"]
     second_player_name = second_player["name"]
-    first_colors = [
-        get_percentile_color(value) if not pd.isna(value) else "#8a8f98"
-        for value in comparison_table["Player 1 Percentile"]
-    ]
-    second_colors = [
-        get_percentile_color(value) if not pd.isna(value) else "#8a8f98"
-        for value in comparison_table["Player 2 Percentile"]
-    ]
-
-    comparison_chart = go.Figure()
-    comparison_chart.add_trace(
-        go.Bar(
-            name=first_player_name,
-            y=comparison_table["Stat"],
-            x=comparison_table["Player 1 Percentile"],
-            orientation="h",
-            marker={
-                "color": first_colors,
-                "line": {"color": "rgba(255,255,255,0.45)", "width": 1},
-            },
-            text=comparison_table["Player 1 Value"],
-            textposition="outside",
-            hovertemplate=(
-                f"{first_player_name}<br>"
-                "%{y}<br>"
-                "Percentile: %{x:.0f}<br>"
-                "Value: %{text}<extra></extra>"
-            ),
-        )
+    first_chart = build_single_player_comparison_chart(
+        comparison_table,
+        first_player_name,
+        "Player 1 Percentile",
+        "Player 1 Value",
     )
-    comparison_chart.add_trace(
-        go.Bar(
-            name=second_player_name,
-            y=comparison_table["Stat"],
-            x=comparison_table["Player 2 Percentile"],
-            orientation="h",
-            marker={
-                "color": second_colors,
-                "line": {"color": "rgba(255,255,255,0.85)", "width": 1},
-                "pattern": {"shape": "/", "fgcolor": "rgba(255,255,255,0.85)", "size": 8},
-            },
-            text=comparison_table["Player 2 Value"],
-            textposition="outside",
-            hovertemplate=(
-                f"{second_player_name}<br>"
-                "%{y}<br>"
-                "Percentile: %{x:.0f}<br>"
-                "Value: %{text}<extra></extra>"
-            ),
-        )
-    )
-    comparison_chart.update_layout(
-        barmode="group",
-        height=560,
-        margin={"l": 20, "r": 20, "t": 40, "b": 20},
-        xaxis_title="Same-position percentile",
-        xaxis_range=[0, 105],
-        yaxis_autorange="reversed",
-        showlegend=False,
+    second_chart = build_single_player_comparison_chart(
+        comparison_table,
+        second_player_name,
+        "Player 2 Percentile",
+        "Player 2 Value",
     )
 
-    st.markdown(
-        f"""
-        <div style="margin-bottom: 8px;">
-            <span style="font-weight: 700;">Solid bars:</span> {first_player_name}
-            &nbsp;&nbsp;|&nbsp;&nbsp;
-            <span style="font-weight: 700;">Striped bars:</span> {second_player_name}
-        </div>
-        <div style="font-size: 0.9rem; opacity: 0.8; margin-bottom: 6px;">
-            Bar color shows how strong the percentile is. The pattern shows which player is which.
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    st.plotly_chart(comparison_chart, use_container_width=True)
+    st.caption("Bar color shows how strong the percentile is.")
+
+    first_chart_column, second_chart_column = st.columns(2)
+
+    with first_chart_column:
+        st.subheader(first_player_name)
+        st.plotly_chart(first_chart, use_container_width=True)
+
+    with second_chart_column:
+        st.subheader(second_player_name)
+        st.plotly_chart(second_chart, use_container_width=True)
+
     st.caption("Lower is better for 5v5 On-Ice xGA/60. Higher is better for the other stats.")
 
     first_value_column = f"{first_player_name} Value"
