@@ -2,3 +2,4 @@ __pycache__/
 .pip-temp/
 *.zip
 data/all_three_zones*.csv
+!data/all_three_zones_2025_26_regular.csv

@@ -61,10 +61,7 @@ def load_player_data():
 @st.cache_data
 def load_microstats_data():
     """
-    Load local All Three Zones microstats if the file exists.
-
-    We do not require this file for the public app because it may be
-    subscription data that should not be committed to GitHub.
+    Load the summarized All Three Zones microstats file.
     """
     microstats_path = Path(MICROSTATS_FILE_PATH)
 
@@ -657,11 +654,11 @@ def show_microstats(player):
 
     with st.expander("Microstats"):
         st.caption(
-            "Local All Three Zones-style microstats. These describe how a player creates offence, enters/exits zones, forechecks, and defends entries at 5v5."
+            "Microstats source: All Three Zones / Corey Sznajder. These stats describe how a player creates offence, enters/exits zones, forechecks, and defends entries at 5v5."
         )
 
         if microstats_row is None:
-            st.write("Microstats are not available for this player or this public app.")
+            st.write("Microstats are not available for this player.")
             return
 
         st.subheader("Offensive Creation")
