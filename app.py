@@ -1575,6 +1575,73 @@ def show_comparison_player_card(player, player_data):
     st.write(generate_scouting_report(player, player_data))
 
 
+def build_impact_comparison_chart(first_player, second_player, player_data):
+    """
+    Build a chart that compares the main impact scores for two players.
+    """
+    first_scores = calculate_impact_scores(first_player, player_data)
+    second_scores = calculate_impact_scores(second_player, player_data)
+    impact_labels = [
+        "Player Value",
+        "Offense",
+        "Defense",
+        "5v5 Driving",
+        "Special Teams",
+    ]
+    score_keys = [
+        "Player Value Score",
+        "Offensive Impact",
+        "Defensive Impact",
+        "5v5 Driving Impact",
+        "Special Teams Impact",
+    ]
+    first_values = [first_scores[key] for key in score_keys]
+    second_values = [second_scores[key] for key in score_keys]
+
+    comparison_chart = go.Figure()
+    comparison_chart.add_trace(
+        go.Bar(
+            name=first_player["name"],
+            x=impact_labels,
+            y=first_values,
+            marker_color=[
+                get_percentile_color(value) if value is not None and not pd.isna(value) else "#8a8f98"
+                for value in first_values
+            ],
+            text=[format_score_for_card(value) for value in first_values],
+            textposition="outside",
+            hovertemplate="%{x}<br>Score: %{text}<extra></extra>",
+        )
+    )
+    comparison_chart.add_trace(
+        go.Bar(
+            name=second_player["name"],
+            x=impact_labels,
+            y=second_values,
+            marker={
+                "color": [
+                    get_percentile_color(value) if value is not None and not pd.isna(value) else "#8a8f98"
+                    for value in second_values
+                ],
+                "pattern": {"shape": "/", "fgcolor": "rgba(255,255,255,0.8)", "size": 8},
+            },
+            text=[format_score_for_card(value) for value in second_values],
+            textposition="outside",
+            hovertemplate="%{x}<br>Score: %{text}<extra></extra>",
+        )
+    )
+    comparison_chart.update_layout(
+        barmode="group",
+        height=430,
+        yaxis_title="Impact Score",
+        yaxis_range=[0, 105],
+        margin={"l": 20, "r": 20, "t": 40, "b": 20},
+        legend_orientation="h",
+    )
+
+    return comparison_chart
+
+
 def build_comparison_rows(player_data, first_player, second_player):
     """
     Build the broad detailed comparison table.
@@ -1728,15 +1795,11 @@ def show_player_comparison(player_data, selected_player):
     second_player_name = second_player["name"]
     comparison_rows = build_comparison_rows(season_data, first_player, second_player)
 
-    st.caption("Quick summary cards are shown first. The detailed stat table is below.")
+    st.caption("Impact Score graph is shown first. The detailed stat table is below.")
+    st.caption("Color shows score quality. Solid bars are the first player, striped bars are the second player.")
 
-    first_card_column, second_card_column = st.columns(2)
-
-    with first_card_column:
-        show_comparison_player_card(first_player, season_data)
-
-    with second_card_column:
-        show_comparison_player_card(second_player, season_data)
+    impact_chart = build_impact_comparison_chart(first_player, second_player, season_data)
+    st.plotly_chart(impact_chart, use_container_width=True)
 
     st.divider()
     st.subheader("Detailed Comparison Table")
