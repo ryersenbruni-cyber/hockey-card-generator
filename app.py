@@ -186,6 +186,31 @@ def format_edge_number(value, decimals=1):
     return round(value, decimals)
 
 
+def format_ordinal_number(value):
+    """
+    Format a number with the correct ordinal suffix.
+
+    Examples:
+    1 becomes 1st, 2 becomes 2nd, 3 becomes 3rd, 4 becomes 4th.
+    11, 12, and 13 are special cases and still use th.
+    """
+    number = int(round(value))
+    last_two_digits = number % 100
+
+    if 11 <= last_two_digits <= 13:
+        suffix = "th"
+    elif number % 10 == 1:
+        suffix = "st"
+    elif number % 10 == 2:
+        suffix = "nd"
+    elif number % 10 == 3:
+        suffix = "rd"
+    else:
+        suffix = "th"
+
+    return f"{number}{suffix}"
+
+
 def format_edge_percentile(value):
     """
     Format an NHL EDGE percentile.
@@ -196,7 +221,7 @@ def format_edge_percentile(value):
     if value is None or pd.isna(value):
         return "NA"
 
-    return f"{round(value * 100)}th"
+    return format_ordinal_number(value * 100)
 
 
 def get_nested_value(data, keys):
@@ -234,6 +259,25 @@ def get_shot_location_summary(edge_data, location_code):
             return location_summary
 
     return {}
+
+
+def calculate_edge_per_60(player, total_value):
+    """
+    Convert a season total from NHL EDGE into a per-60 rate.
+
+    MoneyPuck stores total ice time in seconds, so we convert it to minutes first.
+    """
+    if total_value is None or pd.isna(total_value):
+        return None
+
+    total_icetime_seconds = player.get("total_icetime", pd.NA)
+
+    if pd.isna(total_icetime_seconds) or total_icetime_seconds <= 0:
+        return None
+
+    total_icetime_minutes = total_icetime_seconds / 60
+
+    return total_value / total_icetime_minutes * 60
 
 
 def safe_micro_value(row, column_name):
@@ -515,7 +559,7 @@ def format_percentile_label(percentile):
     if percentile is None or pd.isna(percentile):
         return "No ranking"
 
-    return f"{round(percentile)}th percentile"
+    return f"{format_ordinal_number(percentile)} percentile"
 
 
 def show_quality_indicator(percentile):
@@ -528,6 +572,7 @@ def show_quality_indicator(percentile):
 
     percentile = round(percentile)
     color = get_percentile_color(percentile)
+    percentile_label = format_ordinal_number(percentile)
 
     st.markdown(
         f"""
@@ -541,7 +586,7 @@ def show_quality_indicator(percentile):
             color: white;
             font-size: 0.78rem;
             font-weight: 700;">
-            {percentile}th percentile
+            {percentile_label} percentile
         </div>
         """,
         unsafe_allow_html=True,
@@ -611,12 +656,13 @@ def show_percentile(label, value):
     """
     percentile_value = int(value)
     bar_color = get_percentile_color(percentile_value)
+    percentile_label = format_ordinal_number(percentile_value)
 
     st.markdown(
         f"""
         <div style="margin-bottom: 18px;">
             <div style="font-weight: 600; margin-bottom: 4px;">
-                {label}: {percentile_value}th percentile
+                {label}: {percentile_label} percentile
             </div>
             <div style="height: 18px; background-color: #e8e8e8; border-radius: 9px; overflow: hidden;">
                 <div style="height: 18px; width: {percentile_value}%; background-color: {bar_color}; border-radius: 9px;"></div>
@@ -1444,6 +1490,14 @@ def show_tracking_tools(player):
     total_distance = edge_data.get("totalDistanceSkated", {})
     distance_max_game = edge_data.get("distanceMaxGame", {})
     zone_time = edge_data.get("zoneTimeDetails", {})
+    speed_bursts_per_60 = calculate_edge_per_60(
+        player,
+        speed_bursts.get("value") if speed_bursts else None,
+    )
+    distance_per_60 = calculate_edge_per_60(
+        player,
+        total_distance.get("imperial"),
+    )
 
     first_row = st.columns(4)
 
@@ -1456,8 +1510,8 @@ def show_tracking_tools(player):
 
     with first_row[1]:
         show_stat(
-            "Speed Bursts 20+ mph",
-            format_edge_number(speed_bursts.get("value") if speed_bursts else None, 0),
+            "Speed Bursts 20+ mph/60",
+            format_edge_number(speed_bursts_per_60, 2),
         )
         show_quality_indicator(edge_percentile_to_100(speed_bursts.get("percentile") if speed_bursts else None))
 
@@ -1470,8 +1524,8 @@ def show_tracking_tools(player):
 
     with first_row[3]:
         show_stat(
-            "Total Distance",
-            f"{format_edge_number(total_distance.get('imperial'))} mi",
+            "Distance/60",
+            f"{format_edge_number(distance_per_60, 2)} mi",
         )
         show_quality_indicator(edge_percentile_to_100(total_distance.get("percentile")))
 
