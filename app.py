@@ -39,6 +39,7 @@ NORMAL_USAGE_LOW_TRUST = 0.80
 NORMAL_USAGE_HIGH_TRUST = 1.00
 SPECIAL_TEAMS_LOW_TRUST = 0.60
 SPECIAL_TEAMS_HIGH_TRUST = 1.00
+PLAYER_VALUE_SCALE_FACTOR = 1.35
 LAST_EDGE_DEBUG_MESSAGES = []
 
 
@@ -1319,6 +1320,22 @@ def clamp_score(score):
     return max(0, min(100, score))
 
 
+def calibrate_player_value_score(score):
+    """
+    Spread Player Value Scores out so the card reads like a rating.
+
+    The impact categories are already percentiles, but the final weighted
+    average was too compressed around 50. This keeps 50 as average, raises
+    true high-end profiles, and lowers weak profiles.
+    """
+    if score is None or pd.isna(score):
+        return None
+
+    calibrated_score = 50 + (score - 50) * PLAYER_VALUE_SCALE_FACTOR
+
+    return clamp_score(calibrated_score)
+
+
 def adjust_score_for_usage(raw_score, usage_percentile, low_usage_trust, high_usage_trust):
     """
     Adjust a score based on how much the player is trusted by usage.
@@ -1701,6 +1718,7 @@ def calculate_impact_scores(player, player_data):
         player_value_score = clamp_score(
             player_value_score + get_qoc_player_value_adjustment(player)
         )
+        player_value_score = calibrate_player_value_score(player_value_score)
 
     return {
         "Player Value Score": player_value_score,
@@ -1784,6 +1802,9 @@ def show_impact_scores(player, player_data):
         )
         st.write(
             "Player Value Score uses position-specific weights. For forwards: Offense 40%, Defense 20%, 5v5 Driving 25%, Special Teams 15%. For defensemen: Offense 30%, Defense 35%, 5v5 Driving 25%, Special Teams 10%."
+        )
+        st.write(
+            f"Player Value calibration: after the weighted average is built, the final score is stretched away from 50 by {PLAYER_VALUE_SCALE_FACTOR}x. This prevents elite players from getting flattened into the 70s and also pushes weak profiles lower."
         )
         st.write(
             "Sample-size rule: players under 10 games show NA. Players from 10-24 games have scores pulled toward 50 with a 65% trust factor. Players at 25+ games get normal scoring."
