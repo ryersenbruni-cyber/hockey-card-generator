@@ -19,17 +19,23 @@ DATA_FILE_PATH = "cleaned_data/skaters_strengths.csv"
 NHL_EDGE_BASE_URL = "https://api-web.nhle.com/v1/edge"
 MICROSTATS_FILE_PATH = "data/all_three_zones_2025_26_regular.csv"
 WOODMONEY_FILE_PATH = "data/woodmoney.csv"
+NST_5V5_FILE_PATH = "data/nst_5v5_individual_2025_26.csv"
+NST_PP_FILE_PATH = "data/nst_pp_individual_2025_26.csv"
+NST_PK_FILE_PATH = "data/nst_pk_individual_2025_26.csv"
 MINIMUM_GAMES_FOR_IMPACT = 10
 FULL_TRUST_GAMES = 25
 SMALL_SAMPLE_TRUST = 0.65
 SPECIAL_TEAMS_TOI_MINIMUM = 0.75
 POWER_PLAY_TOI_MINIMUM = 0.75
 PENALTY_KILL_TOI_MINIMUM = 0.75
-LIMITED_SPECIAL_TEAMS_OVERALL_SCORE = 45
 TEAM_CONTEXT_ADJUSTMENT_STRENGTH = 0.25
 TEAM_CONTEXT_MAX_ADJUSTMENT = 8
 QOC_ADJUSTMENT_STRENGTH = 0.06
 QOC_MAX_ADJUSTMENT = 3
+NORMAL_USAGE_LOW_TRUST = 0.80
+NORMAL_USAGE_HIGH_TRUST = 1.00
+SPECIAL_TEAMS_LOW_TRUST = 0.60
+SPECIAL_TEAMS_HIGH_TRUST = 1.00
 
 
 def add_custom_styles():
@@ -63,11 +69,230 @@ def normalize_name(name):
     return name
 
 
+def normalize_team_for_matching(team):
+    """
+    Put team abbreviations from different sources into the same style.
+
+    MoneyPuck uses TBL, LAK, NJD, and SJS.
+    Natural Stat Trick uses T.B, L.A, N.J, and S.J.
+    """
+    team_map = {
+        "T.B": "TBL",
+        "L.A": "LAK",
+        "N.J": "NJD",
+        "S.J": "SJS",
+    }
+
+    return team_map.get(str(team).strip(), str(team).strip())
+
+
+def nst_team_matches(nst_team_text, player_team):
+    """
+    Check whether one NST team cell matches the player's MoneyPuck team.
+
+    Traded players can show up as "ANA, BOS", so we split on commas.
+    """
+    player_team = normalize_team_for_matching(player_team)
+    nst_teams = [
+        normalize_team_for_matching(team_text)
+        for team_text in str(nst_team_text).split(",")
+    ]
+
+    return player_team in nst_teams
+
+
+def safe_divide(numerator, denominator):
+    """
+    Divide two numbers safely.
+
+    If the denominator is missing or zero, return NA instead of crashing.
+    """
+    if pd.isna(numerator) or pd.isna(denominator) or denominator == 0:
+        return pd.NA
+
+    return numerator / denominator
+
+
+def per_60_from_total(total_value, toi_minutes):
+    """
+    Convert a counting stat into a per-60 rate.
+    """
+    if pd.isna(total_value) or pd.isna(toi_minutes) or toi_minutes <= 0:
+        return pd.NA
+
+    return total_value / toi_minutes * 60
+
+
+@st.cache_data
+def load_nst_data(file_path, prefix):
+    """
+    Load one Natural Stat Trick player file and rename its columns.
+
+    prefix tells us which game state the file represents:
+    nst_5v5, nst_pp, or nst_pk.
+    """
+    nst_path = Path(file_path)
+
+    if not nst_path.exists():
+        return None
+
+    nst_data = pd.read_csv(nst_path)
+    nst_data["name_key"] = nst_data["Player"].apply(normalize_name)
+    nst_data["team_match_text"] = nst_data["Team"].astype(str)
+
+    rename_map = {
+        "TOI": f"{prefix}_toi",
+        "Goals": f"{prefix}_goals",
+        "Total Assists": f"{prefix}_total_assists",
+        "First Assists": f"{prefix}_primary_assists",
+        "Second Assists": f"{prefix}_secondary_assists",
+        "Total Points": f"{prefix}_points",
+        "Shots": f"{prefix}_shots",
+        "ixG": f"{prefix}_ixg",
+        "Takeaways": f"{prefix}_takeaways",
+        "Giveaways": f"{prefix}_giveaways",
+        "Shots Blocked": f"{prefix}_blocks",
+        "Faceoffs Won": f"{prefix}_faceoffs_won",
+        "Faceoffs Lost": f"{prefix}_faceoffs_lost",
+    }
+
+    keep_columns = ["name_key", "team_match_text"] + list(rename_map.keys())
+    nst_data = nst_data[[column for column in keep_columns if column in nst_data.columns]]
+    nst_data = nst_data.rename(columns=rename_map)
+
+    rate_columns = [
+        "goals",
+        "primary_assists",
+        "secondary_assists",
+        "points",
+        "shots",
+        "ixg",
+        "takeaways",
+        "giveaways",
+        "blocks",
+    ]
+
+    for stat_name in rate_columns:
+        total_column = f"{prefix}_{stat_name}"
+        rate_column = f"{total_column}_per_60"
+
+        if total_column in nst_data.columns:
+            nst_data[rate_column] = nst_data.apply(
+                lambda row: per_60_from_total(row[total_column], row[f"{prefix}_toi"]),
+                axis=1,
+            )
+
+    if f"{prefix}_goals" in nst_data.columns and f"{prefix}_primary_assists" in nst_data.columns:
+        nst_data[f"{prefix}_primary_points"] = (
+            nst_data[f"{prefix}_goals"] + nst_data[f"{prefix}_primary_assists"]
+        )
+        nst_data[f"{prefix}_primary_points_per_60"] = nst_data.apply(
+            lambda row: per_60_from_total(row[f"{prefix}_primary_points"], row[f"{prefix}_toi"]),
+            axis=1,
+        )
+
+    if f"{prefix}_faceoffs_won" in nst_data.columns and f"{prefix}_faceoffs_lost" in nst_data.columns:
+        total_faceoffs = nst_data[f"{prefix}_faceoffs_won"] + nst_data[f"{prefix}_faceoffs_lost"]
+        nst_data[f"{prefix}_faceoff_percentage"] = nst_data[f"{prefix}_faceoffs_won"] / total_faceoffs
+        nst_data.loc[total_faceoffs <= 0, f"{prefix}_faceoff_percentage"] = pd.NA
+
+    return nst_data
+
+
+def find_nst_player_row(nst_data, player):
+    """
+    Find one player's row in a Natural Stat Trick dataframe.
+    """
+    if nst_data is None:
+        return None
+
+    player_name_key = normalize_name(player["name"])
+    matching_rows = nst_data[nst_data["name_key"] == player_name_key]
+
+    if matching_rows.empty:
+        return None
+
+    same_team_rows = matching_rows[
+        matching_rows["team_match_text"].apply(
+            lambda team_text: nst_team_matches(team_text, player["team"])
+        )
+    ]
+
+    if not same_team_rows.empty:
+        return same_team_rows.iloc[0]
+
+    if len(matching_rows) == 1:
+        return matching_rows.iloc[0]
+
+    return None
+
+
+def add_nst_columns_to_player_data(player_data, nst_data):
+    """
+    Add NST stats to the main player dataframe one player at a time.
+    """
+    if nst_data is None:
+        return player_data
+
+    nst_stat_columns = [
+        column
+        for column in nst_data.columns
+        if column not in ["name_key", "team_match_text"]
+    ]
+
+    missing_columns = [
+        column
+        for column in nst_stat_columns
+        if column not in player_data.columns
+    ]
+
+    if missing_columns:
+        empty_nst_columns = pd.DataFrame(
+            pd.NA,
+            index=player_data.index,
+            columns=missing_columns,
+        )
+        player_data = pd.concat([player_data, empty_nst_columns], axis=1)
+
+    for player_index, player in player_data.iterrows():
+        nst_row = find_nst_player_row(nst_data, player)
+
+        if nst_row is None:
+            continue
+
+        for column in nst_stat_columns:
+            player_data.at[player_index, column] = nst_row[column]
+
+    return player_data
+
+
+def add_all_nst_data(player_data):
+    """
+    Merge the three new Natural Stat Trick files into the player-card data.
+    """
+    nst_sources = [
+        (NST_5V5_FILE_PATH, "nst_5v5"),
+        (NST_PP_FILE_PATH, "nst_pp"),
+        (NST_PK_FILE_PATH, "nst_pk"),
+    ]
+
+    for file_path, prefix in nst_sources:
+        player_data = add_nst_columns_to_player_data(
+            player_data,
+            load_nst_data(file_path, prefix),
+        )
+
+    return player_data
+
+
+@st.cache_data
 def load_player_data():
     """
     Load the prepared player-card dataset.
     """
     player_data = pd.read_csv(DATA_FILE_PATH)
+    player_data = add_all_nst_data(player_data)
+
     return player_data
 
 
@@ -612,12 +837,17 @@ def calculate_series_percentile(series, value, higher_is_better=True):
     if value is None or pd.isna(value):
         return None
 
+    numeric_value = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
+
+    if pd.isna(numeric_value):
+        return None
+
     clean_series = pd.to_numeric(series, errors="coerce").dropna()
 
     if clean_series.empty:
         return None
 
-    percentile = (clean_series <= value).mean() * 100
+    percentile = (clean_series <= numeric_value).mean() * 100
 
     if not higher_is_better:
         percentile = 100 - percentile
@@ -654,6 +884,20 @@ def show_percentile(label, value):
 
     A percentile is a number from 0 to 100.
     """
+    if value is None or pd.isna(value):
+        st.markdown(
+            f"""
+            <div style="margin-bottom: 18px;">
+                <div style="font-weight: 600; margin-bottom: 4px;">
+                    {label}: No ranking
+                </div>
+                <div style="height: 18px; background-color: #e8e8e8; border-radius: 9px;"></div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        return
+
     percentile_value = int(value)
     bar_color = get_percentile_color(percentile_value)
     percentile_label = format_ordinal_number(percentile_value)
@@ -947,7 +1191,7 @@ def adjust_score_for_usage(raw_score, usage_percentile, low_usage_trust, high_us
     Adjust a score based on how much the player is trusted by usage.
 
     A low-minute player gets pulled toward 50.
-    A high-minute player gets pushed slightly farther from 50.
+    A high-minute player can reach full trust, but does not get free bonus points.
     """
     if raw_score is None or pd.isna(raw_score):
         return None
@@ -955,6 +1199,7 @@ def adjust_score_for_usage(raw_score, usage_percentile, low_usage_trust, high_us
     if usage_percentile is None or pd.isna(usage_percentile):
         return raw_score
 
+    high_usage_trust = min(high_usage_trust, 1.00)
     usage_trust = low_usage_trust + (usage_percentile / 100) * (
         high_usage_trust - low_usage_trust
     )
@@ -971,28 +1216,6 @@ def shrink_score_toward_average(score, trust_factor):
         return None
 
     return clamp_score(50 + (score - 50) * trust_factor)
-
-
-def add_defensive_usage_boost(defensive_score, total_toi_percentile):
-    """
-    Give a small defensive boost to players trusted with heavier minutes.
-    """
-    if defensive_score is None or pd.isna(defensive_score):
-        return None
-
-    if total_toi_percentile is None or pd.isna(total_toi_percentile):
-        return defensive_score
-
-    if total_toi_percentile >= 85:
-        return clamp_score(defensive_score + 5)
-
-    if total_toi_percentile >= 70:
-        return clamp_score(defensive_score + 3)
-
-    if total_toi_percentile >= 55:
-        return clamp_score(defensive_score + 1)
-
-    return defensive_score
 
 
 def get_player_percentile(player_data, player, column_name, higher_is_better=True):
@@ -1145,56 +1368,58 @@ def calculate_impact_scores(player, player_data):
     microstats_row = get_microstats_row(player)
 
     offensive_components = [
-        (get_player_percentile(player_data, player, "points_per_60"), 0.50),
-        (get_player_percentile(player_data, player, "expected_goals_per_60"), 0.25),
-        (get_player_percentile(player_data, player, "shots_per_60"), 0.05),
-        (get_team_adjusted_player_percentile(player_data, player, "onIce_xGoalsPercentage"), 0.05),
+        (get_player_percentile(player_data, player, "nst_5v5_goals_per_60"), 0.20),
+        (get_player_percentile(player_data, player, "nst_5v5_primary_assists_per_60"), 0.20),
+        (get_player_percentile(player_data, player, "nst_5v5_ixg_per_60"), 0.15),
+        (get_player_percentile(player_data, player, "nst_5v5_shots_per_60"), 0.05),
     ]
 
     play_driving_components = [
-        (get_team_adjusted_player_percentile(player_data, player, "onIce_xGoalsPercentage"), 0.20),
+        (get_team_adjusted_player_percentile(player_data, player, "onIce_xGoalsPercentage"), 0.25),
         (get_team_adjusted_player_percentile(player_data, player, "onIce_corsiPercentage"), 0.10),
-        (get_team_adjusted_player_percentile(player_data, player, "onIce_fenwickPercentage"), 0.10),
     ]
 
     power_play_score = weighted_average_percentiles(
         [
-            (get_player_percentile(player_data, player, "pp_points_per_60"), 0.45),
-            (get_player_percentile(player_data, player, "pp_shots"), 0.20),
-            (get_player_percentile(player_data, player, "pp_goals"), 0.15),
-            (get_team_adjusted_player_percentile(player_data, player, "pp_on_ice_xgoals_percentage"), 0.20),
+            (get_player_percentile(player_data, player, "nst_pp_goals_per_60"), 0.25),
+            (get_player_percentile(player_data, player, "nst_pp_primary_assists_per_60"), 0.30),
+            (get_player_percentile(player_data, player, "nst_pp_ixg_per_60"), 0.25),
+            (get_player_percentile(player_data, player, "nst_pp_shots_per_60"), 0.10),
+            (get_team_adjusted_player_percentile(player_data, player, "pp_on_ice_xgoals_percentage"), 0.10),
         ]
     )
     penalty_kill_score = weighted_average_percentiles(
         [
-            (get_team_adjusted_player_percentile(player_data, player, "pk_xgoals_against_per_60", False), 0.35),
-            (get_player_percentile(player_data, player, "pk_blocks"), 0.25),
-            (get_player_percentile(player_data, player, "pk_takeaways"), 0.20),
-            (get_player_percentile(player_data, player, "pk_points"), 0.20),
+            (get_team_adjusted_player_percentile(player_data, player, "pk_xgoals_against_per_60", False), 0.40),
+            (get_player_percentile(player_data, player, "nst_pk_takeaways_per_60"), 0.25),
+            (get_player_percentile(player_data, player, "nst_pk_blocks_per_60"), 0.15),
+            (get_player_percentile(player_data, player, "nst_pk_points_per_60"), 0.05),
+            (get_player_percentile(player_data, player, "nst_pk_ixg_per_60"), 0.05),
+            (get_player_percentile(player_data, player, "nst_pk_shots_per_60"), 0.10),
         ]
     )
 
     if player["position_group"] == "D":
         defensive_components = [
-            (get_team_adjusted_player_percentile(player_data, player, "on_ice_xgoals_against_per_60", False), 0.20),
-            (get_team_adjusted_player_percentile(player_data, player, "onIce_xGoalsPercentage"), 0.15),
-            (get_team_adjusted_player_percentile(player_data, player, "onIce_fenwickPercentage"), 0.10),
+            (get_team_adjusted_player_percentile(player_data, player, "on_ice_xgoals_against_per_60", False), 0.22),
+            (get_team_adjusted_player_percentile(player_data, player, "onIce_corsiPercentage"), 0.10),
+            (get_player_percentile(player_data, player, "nst_5v5_blocks_per_60"), 0.04),
+            (get_player_percentile(player_data, player, "nst_5v5_takeaways_per_60"), 0.04),
         ]
     elif player["position"] == "C":
         defensive_components = [
-            (get_team_adjusted_player_percentile(player_data, player, "on_ice_xgoals_against_per_60", False), 0.15),
-            (get_team_adjusted_player_percentile(player_data, player, "onIce_xGoalsPercentage"), 0.10),
-            (get_team_adjusted_player_percentile(player_data, player, "onIce_fenwickPercentage"), 0.05),
-            (get_player_percentile(player_data, player, "takeaways_per_60"), 0.20),
-            (penalty_kill_score, 0.15),
+            (get_team_adjusted_player_percentile(player_data, player, "on_ice_xgoals_against_per_60", False), 0.22),
+            (get_team_adjusted_player_percentile(player_data, player, "onIce_corsiPercentage"), 0.10),
+            (get_player_percentile(player_data, player, "nst_5v5_takeaways_per_60"), 0.20),
+            (get_player_percentile(player_data, player, "nst_5v5_blocks_per_60"), 0.05),
+            (get_player_percentile(player_data, player, "nst_5v5_faceoff_percentage"), 0.05),
         ]
     else:
         defensive_components = [
-            (get_team_adjusted_player_percentile(player_data, player, "on_ice_xgoals_against_per_60", False), 0.25),
-            (get_team_adjusted_player_percentile(player_data, player, "onIce_xGoalsPercentage"), 0.20),
-            (get_team_adjusted_player_percentile(player_data, player, "onIce_fenwickPercentage"), 0.10),
-            (get_player_percentile(player_data, player, "takeaways_per_60"), 0.15),
-            (penalty_kill_score, 0.10),
+            (get_team_adjusted_player_percentile(player_data, player, "on_ice_xgoals_against_per_60", False), 0.22),
+            (get_team_adjusted_player_percentile(player_data, player, "onIce_corsiPercentage"), 0.15),
+            (get_player_percentile(player_data, player, "nst_5v5_takeaways_per_60"), 0.15),
+            (get_player_percentile(player_data, player, "nst_5v5_blocks_per_60"), 0.10),
         ]
 
     special_teams_components = [
@@ -1203,14 +1428,14 @@ def calculate_impact_scores(player, player_data):
     if microstats_row is not None:
         offensive_components.extend(
             [
-                (get_micro_rate_percentile(microstats_row, "Chances"), 0.05),
-                (get_micro_rate_percentile(microstats_row, "Primary Shot Assists"), 0.05),
-                (get_micro_rate_percentile(microstats_row, "Chance Assists"), 0.05),
+                (get_micro_rate_percentile(microstats_row, "Primary Shot Assists"), 0.15),
+                (get_micro_rate_percentile(microstats_row, "Chance Assists"), 0.15),
+                (get_micro_rate_percentile(microstats_row, "Chances"), 0.10),
             ]
         )
         play_driving_components.extend(
             [
-                (get_micro_rate_percentile(microstats_row, "Zone Entries"), 0.20),
+                (get_micro_rate_percentile(microstats_row, "Zone Entries"), 0.25),
                 (get_micro_percentage_percentile(microstats_row, "Carries", "Zone Entries"), 0.20),
                 (get_micro_percentage_percentile(microstats_row, "Exits w/ Possession", "Zone Exits"), 0.20),
             ]
@@ -1218,15 +1443,15 @@ def calculate_impact_scores(player, player_data):
         if player["position_group"] == "D":
             defensive_components.extend(
                 [
-                    (get_micro_rate_percentile(microstats_row, "Denials"), 0.15),
-                    (get_micro_rate_percentile(microstats_row, "DZ Retrievals"), 0.15),
+                    (get_micro_rate_percentile(microstats_row, "Denials"), 0.20),
+                    (get_micro_rate_percentile(microstats_row, "DZ Retrievals"), 0.05),
                     (
                         get_micro_percentage_percentile(
                             microstats_row,
                             "Retrievals Leading to Exits",
                             "DZ Retrievals",
                         ),
-                        0.15,
+                        0.20,
                     ),
                     (
                         get_micro_percentage_percentile(
@@ -1234,7 +1459,7 @@ def calculate_impact_scores(player, player_data):
                             "Exits w/ Possession",
                             "Zone Exits",
                         ),
-                        0.10,
+                        0.15,
                     ),
                 ]
             )
@@ -1243,14 +1468,15 @@ def calculate_impact_scores(player, player_data):
                 [
                     (get_micro_rate_percentile(microstats_row, "Forecheck Pressures"), 0.15),
                     (get_micro_rate_percentile(microstats_row, "DZ Retrievals"), 0.10),
-                    (get_micro_percentage_percentile(microstats_row, "Exits w/ Possession", "Zone Exits"), 0.10),
+                    (get_micro_percentage_percentile(microstats_row, "Exits w/ Possession", "Zone Exits"), 0.13),
                 ]
             )
         else:
             defensive_components.extend(
                 [
-                    (get_micro_rate_percentile(microstats_row, "Forecheck Pressures"), 0.15),
-                    (get_micro_percentage_percentile(microstats_row, "Exits w/ Possession", "Zone Exits"), 0.05),
+                    (get_micro_rate_percentile(microstats_row, "Forecheck Pressures"), 0.20),
+                    (get_micro_percentage_percentile(microstats_row, "Exits w/ Possession", "Zone Exits"), 0.13),
+                    (get_micro_rate_percentile(microstats_row, "DZ Retrievals"), 0.05),
                 ]
             )
 
@@ -1288,30 +1514,29 @@ def calculate_impact_scores(player, player_data):
     offensive_impact = adjust_score_for_usage(
         raw_offensive_impact,
         total_toi_percentile,
-        0.80,
-        1.15,
+        NORMAL_USAGE_LOW_TRUST,
+        NORMAL_USAGE_HIGH_TRUST,
     )
     play_driving_impact = adjust_score_for_usage(
         raw_play_driving_impact,
         total_toi_percentile,
-        0.80,
-        1.15,
+        NORMAL_USAGE_LOW_TRUST,
+        NORMAL_USAGE_HIGH_TRUST,
     )
     defensive_impact = adjust_score_for_usage(
         raw_defensive_impact,
         total_toi_percentile,
-        0.80,
-        1.15,
+        NORMAL_USAGE_LOW_TRUST,
+        NORMAL_USAGE_HIGH_TRUST,
     )
-    defensive_impact = add_defensive_usage_boost(defensive_impact, total_toi_percentile)
     special_teams_impact = None
 
     if has_enough_special_teams_time:
         special_teams_impact = adjust_score_for_usage(
             raw_special_teams_impact,
             special_teams_toi_percentile,
-            0.60,
-            1.30,
+            SPECIAL_TEAMS_LOW_TRUST,
+            SPECIAL_TEAMS_HIGH_TRUST,
         )
 
     if player.get("games_played", 0) < FULL_TRUST_GAMES:
@@ -1320,27 +1545,22 @@ def calculate_impact_scores(player, player_data):
         defensive_impact = shrink_score_toward_average(defensive_impact, SMALL_SAMPLE_TRUST)
         special_teams_impact = shrink_score_toward_average(special_teams_impact, SMALL_SAMPLE_TRUST)
 
-    special_teams_overall_score = special_teams_impact
-
-    if special_teams_overall_score is None:
-        special_teams_overall_score = LIMITED_SPECIAL_TEAMS_OVERALL_SCORE
-
     if player["position_group"] == "D":
         player_value_score = weighted_average_percentiles(
             [
-                (offensive_impact, 0.35),
-                (defensive_impact, 0.30),
+                (offensive_impact, 0.30),
+                (defensive_impact, 0.35),
                 (play_driving_impact, 0.25),
-                (special_teams_overall_score, 0.10),
+                (special_teams_impact, 0.10),
             ]
         )
     else:
         player_value_score = weighted_average_percentiles(
             [
-                (offensive_impact, 0.45),
+                (offensive_impact, 0.40),
                 (defensive_impact, 0.20),
-                (play_driving_impact, 0.20),
-                (special_teams_overall_score, 0.15),
+                (play_driving_impact, 0.25),
+                (special_teams_impact, 0.15),
             ]
         )
 
@@ -1418,19 +1638,19 @@ def show_impact_scores(player, player_data):
         special_teams_toi_per_game = get_special_teams_toi_per_game(player)
 
         st.write(
-            "Offensive Impact is weighted heavily toward point production and individual expected goals. Shots/60, 5v5 On-Ice xG%, and offensive microstats are smaller supporting pieces."
+            "Offensive Impact uses mostly individual 5v5 offense: goals/60, primary assists/60, individual xG/60, primary shot assists/60, chance assists/60, chances/60, and a small shots/60 piece."
         )
         st.write(
-            "5v5 Driving Impact still uses on-ice xG%, Corsi%, and Fenwick%, but microstats like entries and possession exits now carry more of the grade."
+            "5v5 Driving Impact is now transition-heavy: team-adjusted on-ice xG%, zone entries/60, controlled entry percentage, possession exit percentage, and a smaller Corsi% piece."
         )
         st.write(
-            "Defensive Impact is position-specific. Defensemen get more credit for denials, retrievals, retrievals leading to exits, possession exits, and 5v5 play-driving. Centers get more credit for takeaways, low-zone support, PK value, retrievals, and forecheck pressure. Wingers get more credit for takeaways, forecheck pressure, and shot/chance suppression."
+            "Defensive Impact is position-specific. Defensemen get more credit for entry denials, retrievals leading to exits, possession exits, and xGA suppression. Centers get takeaways, forecheck pressure, retrieval support, possession exits, and a small faceoff piece. Wingers get forecheck pressure, takeaways, possession exits, blocks, and xGA suppression."
         )
         st.write(
-            "Special Teams Impact gives equal room to power-play value and penalty-kill value. It now leans more on individual PP production, PP shot/goals involvement, PK blocks, PK takeaways, and shorthanded points, while team-driven PP xG% and PK xGA/60 are smaller pieces."
+            "Special Teams Impact separates PP and PK. PP uses goals/60, primary assists/60, individual xG/60, shots/60, and a capped PP on-ice xG% piece. PK uses team-adjusted xGA suppression, takeaways/60, blocks/60, shorthanded points/60, and shorthanded chance creation."
         )
         st.write(
-            "Player Value Score uses position-specific weights. For forwards: Offense 45%, Defense 20%, 5v5 Driving 20%, Special Teams 15%. For defensemen: Offense 35%, Defense 30%, 5v5 Driving 25%, Special Teams 10%."
+            "Player Value Score uses position-specific weights. For forwards: Offense 40%, Defense 20%, 5v5 Driving 25%, Special Teams 15%. For defensemen: Offense 30%, Defense 35%, 5v5 Driving 25%, Special Teams 10%."
         )
         st.write(
             "Sample-size rule: players under 10 games show NA. Players from 10-24 games have scores pulled toward 50 with a 65% trust factor. Players at 25+ games get normal scoring."
@@ -1439,13 +1659,10 @@ def show_impact_scores(player, player_data):
             "Percentile rule: players under 10 games are also removed from comparison pools, so tiny samples do not distort rankings."
         )
         st.write(
-            "TOI adjustment: normal impact scores use a trust range from 80% to 115%. That means low-usage players get pulled toward 50, while high-usage players can move slightly farther from 50."
+            "TOI adjustment: normal impact scores use a trust range from 80% to 100%. That means low-usage players get pulled toward 50, while high-usage players reach full trust without getting free bonus points."
         )
         st.write(
-            "Defensive usage boost: players in the 55th, 70th, and 85th total-TOI percentiles can receive small defensive boosts of +1, +3, and +5."
-        )
-        st.write(
-            "Special teams TOI adjustment: PP/PK ice time is used as a confidence adjustment with a 60% to 130% trust range. It matters more than even-strength TOI because special-teams samples are noisier, but it is not one of the main skill stats."
+            "Special teams TOI adjustment: PP/PK ice time is used as a confidence adjustment with a 60% to 100% trust range. It matters because special-teams samples are noisy, but TOI itself is not treated as a skill stat."
         )
         st.write(
             f"Team-context adjustment: team-driven stats like on-ice xG%, Corsi%, Fenwick%, xGA/60, PP on-ice xG%, and PK xGA/60 are adjusted by team environment. The adjustment is capped at {TEAM_CONTEXT_MAX_ADJUSTMENT} percentile points so elite players on strong teams are not over-punished."
@@ -1454,7 +1671,7 @@ def show_impact_scores(player, player_data):
             f"Quality-of-competition adjustment: WoodMoney Elite CTOI% adds or subtracts up to {QOC_MAX_ADJUSTMENT} Player Value points based on how much elite competition the player faces."
         )
         st.write(
-            f"Power play and penalty kill qualify separately. PP Impact needs at least {POWER_PLAY_TOI_MINIMUM} PP TOI/G, and PK Impact needs at least {PENALTY_KILL_TOI_MINIMUM} PK TOI/G. If neither side qualifies, Special Teams Impact shows as NA and counts as {LIMITED_SPECIAL_TEAMS_OVERALL_SCORE}/100 in Player Value Score."
+            f"Power play and penalty kill qualify separately. PP Impact needs at least {POWER_PLAY_TOI_MINIMUM} PP TOI/G, and PK Impact needs at least {PENALTY_KILL_TOI_MINIMUM} PK TOI/G. If neither side qualifies, Special Teams Impact shows as NA and Player Value is reweighted across the available categories."
         )
         st.write(
             f"This player's combined PP+PK TOI/G is {round(special_teams_toi_per_game, 2)}."
@@ -1597,7 +1814,47 @@ def show_quality_of_competition(player):
         show_stat("Player Value Adj.", round(qoc_adjustment, 1))
 
 
-def show_microstats(player):
+def show_nst_5v5_individual_stats(player, player_data):
+    """
+    Show the new Natural Stat Trick 5v5 individual stats.
+    """
+    st.subheader("5v5 Individual Offense")
+    st.caption(
+        "Natural Stat Trick 5v5 player stats. Primary assists are first assists, which are usually more meaningful than secondary assists."
+    )
+
+    first_row = st.columns(4)
+
+    with first_row[0]:
+        show_stat("5v5 Goals/60", format_optional_number(player.get("nst_5v5_goals_per_60", pd.NA), 2))
+        show_quality_indicator(calculate_player_data_percentile(player_data, "nst_5v5_goals_per_60", player))
+    with first_row[1]:
+        show_stat("5v5 Primary Assists/60", format_optional_number(player.get("nst_5v5_primary_assists_per_60", pd.NA), 2))
+        show_quality_indicator(calculate_player_data_percentile(player_data, "nst_5v5_primary_assists_per_60", player))
+    with first_row[2]:
+        show_stat("5v5 ixG/60", format_optional_number(player.get("nst_5v5_ixg_per_60", pd.NA), 2))
+        show_quality_indicator(calculate_player_data_percentile(player_data, "nst_5v5_ixg_per_60", player))
+    with first_row[3]:
+        show_stat("5v5 Shots/60", format_optional_number(player.get("nst_5v5_shots_per_60", pd.NA), 2))
+        show_quality_indicator(calculate_player_data_percentile(player_data, "nst_5v5_shots_per_60", player))
+
+    second_row = st.columns(4)
+
+    with second_row[0]:
+        show_stat("5v5 Takeaways/60", format_optional_number(player.get("nst_5v5_takeaways_per_60", pd.NA), 2))
+        show_quality_indicator(calculate_player_data_percentile(player_data, "nst_5v5_takeaways_per_60", player))
+    with second_row[1]:
+        show_stat("5v5 Blocks/60", format_optional_number(player.get("nst_5v5_blocks_per_60", pd.NA), 2))
+        show_quality_indicator(calculate_player_data_percentile(player_data, "nst_5v5_blocks_per_60", player))
+    with second_row[2]:
+        show_stat("5v5 Faceoff%", format_optional_percentage(player.get("nst_5v5_faceoff_percentage", pd.NA)))
+        show_quality_indicator(calculate_player_data_percentile(player_data, "nst_5v5_faceoff_percentage", player))
+    with second_row[3]:
+        show_stat("5v5 Giveaways/60", format_optional_number(player.get("nst_5v5_giveaways_per_60", pd.NA), 2))
+        show_quality_indicator(calculate_player_data_percentile(player_data, "nst_5v5_giveaways_per_60", player, higher_is_better=False))
+
+
+def show_microstats(player, player_data):
     """
     Show All Three Zones microstats when the local data file exists.
     """
@@ -1607,6 +1864,8 @@ def show_microstats(player):
         show_tracking_tools(player)
         st.divider()
         show_quality_of_competition(player)
+        st.divider()
+        show_nst_5v5_individual_stats(player, player_data)
         st.divider()
         st.caption(
             "Microstats source: All Three Zones / Corey Sznajder. These stats describe how a player creates offence, enters/exits zones, forechecks, and defends entries at 5v5."
@@ -1685,23 +1944,27 @@ def show_power_play_stats_content(player, player_data):
     """
     Show important power-play stats.
     """
-    pp_columns = st.columns(3)
+    pp_columns = st.columns(4)
 
     with pp_columns[0]:
         show_stat("PP TOI/G", format_optional_minutes(player.get("pp_toi_per_game", pd.NA)))
         show_quality_indicator(calculate_player_data_percentile(player_data, "pp_toi_per_game", player))
-        show_stat("PP Goals", format_optional_number(player.get("pp_goals", pd.NA)))
-        show_quality_indicator(calculate_player_data_percentile(player_data, "pp_goals", player))
+        show_stat("PP Goals/60", format_optional_number(player.get("nst_pp_goals_per_60", pd.NA), 2))
+        show_quality_indicator(calculate_player_data_percentile(player_data, "nst_pp_goals_per_60", player))
 
     with pp_columns[1]:
-        show_stat("PP Points", format_optional_number(player.get("pp_points", pd.NA)))
-        show_quality_indicator(calculate_player_data_percentile(player_data, "pp_points", player))
-        show_stat("PP Points/60", format_optional_number(player.get("pp_points_per_60", pd.NA), 2))
-        show_quality_indicator(calculate_player_data_percentile(player_data, "pp_points_per_60", player))
+        show_stat("PP Primary Assists/60", format_optional_number(player.get("nst_pp_primary_assists_per_60", pd.NA), 2))
+        show_quality_indicator(calculate_player_data_percentile(player_data, "nst_pp_primary_assists_per_60", player))
+        show_stat("PP Points/60", format_optional_number(player.get("nst_pp_points_per_60", pd.NA), 2))
+        show_quality_indicator(calculate_player_data_percentile(player_data, "nst_pp_points_per_60", player))
 
     with pp_columns[2]:
-        show_stat("PP Shots", format_optional_number(player.get("pp_shots", pd.NA)))
-        show_quality_indicator(calculate_player_data_percentile(player_data, "pp_shots", player))
+        show_stat("PP ixG/60", format_optional_number(player.get("nst_pp_ixg_per_60", pd.NA), 2))
+        show_quality_indicator(calculate_player_data_percentile(player_data, "nst_pp_ixg_per_60", player))
+        show_stat("PP Shots/60", format_optional_number(player.get("nst_pp_shots_per_60", pd.NA), 2))
+        show_quality_indicator(calculate_player_data_percentile(player_data, "nst_pp_shots_per_60", player))
+
+    with pp_columns[3]:
         show_stat(
             "PP On-Ice xG%",
             format_optional_percentage(
@@ -1717,25 +1980,31 @@ def show_penalty_kill_stats_content(player, player_data):
 
     PK offense is limited to shorthanded goals and points.
     """
-    pk_columns = st.columns(3)
+    pk_columns = st.columns(4)
 
     with pk_columns[0]:
         show_stat("PK TOI/G", format_optional_minutes(player.get("pk_toi_per_game", pd.NA)))
         show_quality_indicator(calculate_player_data_percentile(player_data, "pk_toi_per_game", player))
-        show_stat("SH Goals", format_optional_number(player.get("pk_goals", pd.NA)))
-        show_quality_indicator(calculate_player_data_percentile(player_data, "pk_goals", player))
+        show_stat("SH Points/60", format_optional_number(player.get("nst_pk_points_per_60", pd.NA), 2))
+        show_quality_indicator(calculate_player_data_percentile(player_data, "nst_pk_points_per_60", player))
 
     with pk_columns[1]:
-        show_stat("SH Points", format_optional_number(player.get("pk_points", pd.NA)))
-        show_quality_indicator(calculate_player_data_percentile(player_data, "pk_points", player))
-        show_stat("PK Blocks", format_optional_number(player.get("pk_blocks", pd.NA)))
-        show_quality_indicator(calculate_player_data_percentile(player_data, "pk_blocks", player))
+        show_stat("PK Takeaways/60", format_optional_number(player.get("nst_pk_takeaways_per_60", pd.NA), 2))
+        show_quality_indicator(calculate_player_data_percentile(player_data, "nst_pk_takeaways_per_60", player))
+        show_stat("PK Blocks/60", format_optional_number(player.get("nst_pk_blocks_per_60", pd.NA), 2))
+        show_quality_indicator(calculate_player_data_percentile(player_data, "nst_pk_blocks_per_60", player))
 
     with pk_columns[2]:
-        show_stat("PK Takeaways", format_optional_number(player.get("pk_takeaways", pd.NA)))
-        show_quality_indicator(calculate_player_data_percentile(player_data, "pk_takeaways", player))
         show_stat("PK xGA/60", format_optional_number(player.get("pk_xgoals_against_per_60", pd.NA), 2))
         show_quality_indicator(calculate_player_data_percentile(player_data, "pk_xgoals_against_per_60", player, higher_is_better=False))
+        show_stat("PK ixG/60", format_optional_number(player.get("nst_pk_ixg_per_60", pd.NA), 2))
+        show_quality_indicator(calculate_player_data_percentile(player_data, "nst_pk_ixg_per_60", player))
+
+    with pk_columns[3]:
+        show_stat("PK Shots/60", format_optional_number(player.get("nst_pk_shots_per_60", pd.NA), 2))
+        show_quality_indicator(calculate_player_data_percentile(player_data, "nst_pk_shots_per_60", player))
+        show_stat("PK Blocks", format_optional_number(player.get("nst_pk_blocks", pd.NA)))
+        show_quality_indicator(calculate_player_data_percentile(player_data, "nst_pk_blocks", player))
 
 
 def show_special_teams_stats(player, player_data):
@@ -1998,23 +2267,26 @@ def build_comparison_rows(player_data, first_player, second_player):
         ("Blocks", "total_blocks", "number", True),
         ("Takeaways", "total_takeaways", "number", True),
         ("Goals/Game", "goals_per_game", "number", True),
-        ("Points/60", "points_per_60", "number", True),
-        ("Shots/60", "shots_per_60", "number", True),
-        ("Individual xG/60", "expected_goals_per_60", "number", True),
+        ("5v5 Goals/60", "nst_5v5_goals_per_60", "number", True),
+        ("5v5 Primary Assists/60", "nst_5v5_primary_assists_per_60", "number", True),
+        ("5v5 Individual xG/60", "nst_5v5_ixg_per_60", "number", True),
+        ("5v5 Shots/60", "nst_5v5_shots_per_60", "number", True),
         ("5v5 On-Ice xG%", "onIce_xGoalsPercentage", "percentage", True),
         ("5v5 On-Ice xGF/60", "on_ice_xgoals_for_per_60", "number", True),
         ("5v5 On-Ice xGA/60", "on_ice_xgoals_against_per_60", "number", False),
         ("5v5 Corsi%", "onIce_corsiPercentage", "percentage", True),
-        ("5v5 Fenwick%", "onIce_fenwickPercentage", "percentage", True),
+        ("5v5 Takeaways/60", "nst_5v5_takeaways_per_60", "number", True),
+        ("5v5 Blocks/60", "nst_5v5_blocks_per_60", "number", True),
         ("PP TOI/G", "pp_toi_per_game", "number", True),
-        ("PP Points", "pp_points", "number", True),
-        ("PP Points/60", "pp_points_per_60", "number", True),
+        ("PP Goals/60", "nst_pp_goals_per_60", "number", True),
+        ("PP Primary Assists/60", "nst_pp_primary_assists_per_60", "number", True),
+        ("PP ixG/60", "nst_pp_ixg_per_60", "number", True),
         ("PP On-Ice xG%", "pp_on_ice_xgoals_percentage", "percentage", True),
         ("PK TOI/G", "pk_toi_per_game", "number", True),
-        ("SH Points", "pk_points", "number", True),
+        ("SH Points/60", "nst_pk_points_per_60", "number", True),
         ("PK xGA/60", "pk_xgoals_against_per_60", "number", False),
-        ("PK Blocks", "pk_blocks", "number", True),
-        ("PK Takeaways", "pk_takeaways", "number", True),
+        ("PK Blocks/60", "nst_pk_blocks_per_60", "number", True),
+        ("PK Takeaways/60", "nst_pk_takeaways_per_60", "number", True),
     ]
 
     for stat_name, column_name, value_type, higher_is_better in comparison_stats:
@@ -2167,13 +2439,30 @@ def show_percentiles(player, player_data):
     with percentile_columns[0]:
         if player_value_score is not None and not pd.isna(player_value_score):
             show_percentile("Player Value Score", player_value_score)
-        show_percentile("Points/60", player["points_per_60_percentile"])
-        show_percentile("Expected Goals/60", player["expected_goals_per_60_percentile"])
+        show_percentile(
+            "5v5 Goals/60",
+            calculate_player_data_percentile(player_data, "nst_5v5_goals_per_60", player),
+        )
+        show_percentile(
+            "5v5 Primary Assists/60",
+            calculate_player_data_percentile(player_data, "nst_5v5_primary_assists_per_60", player),
+        )
+        show_percentile(
+            "5v5 Individual xG/60",
+            calculate_player_data_percentile(player_data, "nst_5v5_ixg_per_60", player),
+        )
 
     with percentile_columns[1]:
         show_percentile("5v5 On-Ice xGoals %", player["onIce_xGoalsPercentage_percentile"])
         show_percentile("5v5 Corsi %", player["onIce_corsiPercentage_percentile"])
-        show_percentile("5v5 Fenwick %", player["onIce_fenwickPercentage_percentile"])
+        show_percentile(
+            "5v5 Takeaways/60",
+            calculate_player_data_percentile(player_data, "nst_5v5_takeaways_per_60", player),
+        )
+        show_percentile(
+            "5v5 Blocks/60",
+            calculate_player_data_percentile(player_data, "nst_5v5_blocks_per_60", player),
+        )
 
 
 def describe_impact_score(score):
@@ -2269,21 +2558,21 @@ def generate_scouting_report(player, player_data):
     special_teams_level = describe_impact_score(special_teams)
 
     if offense is not None and offense >= 70:
-        offensive_sentence = f"Offensively, {player['name']} profiles as a {offense_level} contributor, with his production and chance-impact indicators driving the grade."
+        offensive_sentence = f"Offensively, {player['name']} profiles as a {offense_level} contributor, with primary production, individual chance quality, and creation metrics driving the grade."
     elif offense is not None and offense < 45:
         offensive_sentence = f"Offensively, {player['name']} has a limited profile in this sample and does not show strong production or chance-creation impact."
     else:
         offensive_sentence = f"Offensively, {player['name']} grades as a {offense_level} contributor rather than a clear driver."
 
     if driving is not None and driving >= 70:
-        driving_sentence = "At 5-on-5, his team tends to tilt play positively in his minutes, especially by controlling chance quality."
+        driving_sentence = "At 5-on-5, his profile shows strong play-driving value, with the model giving weight to transition entries, controlled entries, possession exits, and chance share."
     elif driving is not None and driving < 45:
         driving_sentence = "At 5-on-5, the play-driving results are a concern and suggest his minutes have not consistently moved play in the right direction."
     else:
         driving_sentence = f"At 5-on-5, his play-driving profile is {driving_level}, with neither dominant nor severely damaging results."
 
     if defense is not None and defense >= 70:
-        defensive_sentence = "Defensively, the model views him as a strong option, with the position-adjusted formula giving credit for suppression, usage, and defensive microstats where available."
+        defensive_sentence = "Defensively, the model views him as a strong option, with the position-adjusted formula giving credit for suppression and role-specific defensive events where available."
     elif defense is not None and defense < 45:
         defensive_sentence = "Defensively, his profile is still a weak point, though this version tries not to over-punish team-driven xGA results."
     else:
@@ -2292,7 +2581,7 @@ def generate_scouting_report(player, player_data):
     if special_teams is None:
         special_teams_sentence = "Special teams value is marked NA because he has not played enough combined PP and PK minutes to grade it fairly."
     else:
-        special_teams_sentence = f"His special-teams profile grades as {special_teams_level}, with PP and PK impact separated from the main even-strength read."
+        special_teams_sentence = f"His special-teams profile grades as {special_teams_level}, with PP creation and PK suppression measured separately from the main even-strength read."
 
     role_sentence = f"Overall, his Player Value Score fits best as a {role}."
 
@@ -2360,7 +2649,7 @@ def main():
         show_basic_stats(selected_player)
         show_impact_scores(selected_player, player_data)
         show_percentiles(selected_player, player_data)
-        show_microstats(selected_player)
+        show_microstats(selected_player, player_data)
         show_special_teams_stats(selected_player, player_data)
         show_rate_stats(selected_player, player_data)
         show_scouting_report(selected_player, player_data)

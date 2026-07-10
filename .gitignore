@@ -4,3 +4,6 @@ __pycache__/
 data/all_three_zones*.csv
 !data/all_three_zones_2025_26_regular.csv
 !data/woodmoney.csv
+!data/nst_5v5_individual_2025_26.csv
+!data/nst_pp_individual_2025_26.csv
+!data/nst_pk_individual_2025_26.csv
