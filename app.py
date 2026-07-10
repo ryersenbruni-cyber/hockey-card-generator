@@ -25,6 +25,8 @@ SPECIAL_TEAMS_TOI_MINIMUM = 0.75
 POWER_PLAY_TOI_MINIMUM = 0.75
 PENALTY_KILL_TOI_MINIMUM = 0.75
 LIMITED_SPECIAL_TEAMS_OVERALL_SCORE = 45
+TEAM_CONTEXT_ADJUSTMENT_STRENGTH = 0.25
+TEAM_CONTEXT_MAX_ADJUSTMENT = 8
 
 
 def add_custom_styles():
@@ -853,6 +855,81 @@ def get_player_percentile(player_data, player, column_name, higher_is_better=Tru
     )
 
 
+def get_team_environment_percentile(player_data, team):
+    """
+    Estimate how friendly a team environment is for on-ice stats.
+
+    This uses team averages of stats that are heavily affected by teammates
+    and systems.
+    """
+    comparison_data = player_data[player_data["games_played"] >= MINIMUM_GAMES_FOR_IMPACT].copy()
+    team_rows = comparison_data[comparison_data["team"] == team]
+
+    if team_rows.empty:
+        return None
+
+    team_averages = (
+        comparison_data.groupby("team")
+        .agg(
+            on_ice_xg=("onIce_xGoalsPercentage", "mean"),
+            corsi=("onIce_corsiPercentage", "mean"),
+            fenwick=("onIce_fenwickPercentage", "mean"),
+            xga=("on_ice_xgoals_against_per_60", "mean"),
+        )
+        .dropna()
+    )
+
+    if team not in team_averages.index:
+        return None
+
+    team_average_row = team_averages.loc[team]
+    environment_components = [
+        calculate_series_percentile(team_averages["on_ice_xg"], team_average_row["on_ice_xg"]),
+        calculate_series_percentile(team_averages["corsi"], team_average_row["corsi"]),
+        calculate_series_percentile(team_averages["fenwick"], team_average_row["fenwick"]),
+        calculate_series_percentile(team_averages["xga"], team_average_row["xga"], False),
+    ]
+
+    return average_percentiles(environment_components)
+
+
+def adjust_team_driven_percentile(raw_percentile, team_environment_percentile):
+    """
+    Reduce team-environment inflation for team-driven stats.
+
+    Great team environments pull raw team-driven percentiles down a little.
+    Poor team environments lift raw team-driven percentiles a little.
+    """
+    if raw_percentile is None or pd.isna(raw_percentile):
+        return None
+
+    if team_environment_percentile is None or pd.isna(team_environment_percentile):
+        return raw_percentile
+
+    team_adjustment = (team_environment_percentile - 50) * TEAM_CONTEXT_ADJUSTMENT_STRENGTH
+    team_adjustment = max(
+        -TEAM_CONTEXT_MAX_ADJUSTMENT,
+        min(TEAM_CONTEXT_MAX_ADJUSTMENT, team_adjustment),
+    )
+
+    return clamp_score(raw_percentile - team_adjustment)
+
+
+def get_team_adjusted_player_percentile(player_data, player, column_name, higher_is_better=True):
+    """
+    Get a same-position percentile, then adjust it for team context.
+    """
+    raw_percentile = get_player_percentile(
+        player_data,
+        player,
+        column_name,
+        higher_is_better,
+    )
+    team_environment_percentile = get_team_environment_percentile(player_data, player["team"])
+
+    return adjust_team_driven_percentile(raw_percentile, team_environment_percentile)
+
+
 def get_special_teams_toi_percentile(player_data, player):
     """
     Rank a player's combined PP and PK ice time against the same position group.
@@ -919,13 +996,13 @@ def calculate_impact_scores(player, player_data):
         (get_player_percentile(player_data, player, "points_per_60"), 0.40),
         (get_player_percentile(player_data, player, "expected_goals_per_60"), 0.25),
         (get_player_percentile(player_data, player, "shots_per_60"), 0.15),
-        (get_player_percentile(player_data, player, "onIce_xGoalsPercentage"), 0.05),
+        (get_team_adjusted_player_percentile(player_data, player, "onIce_xGoalsPercentage"), 0.05),
     ]
 
     play_driving_components = [
-        (get_player_percentile(player_data, player, "onIce_xGoalsPercentage"), 0.20),
-        (get_player_percentile(player_data, player, "onIce_corsiPercentage"), 0.10),
-        (get_player_percentile(player_data, player, "onIce_fenwickPercentage"), 0.10),
+        (get_team_adjusted_player_percentile(player_data, player, "onIce_xGoalsPercentage"), 0.20),
+        (get_team_adjusted_player_percentile(player_data, player, "onIce_corsiPercentage"), 0.10),
+        (get_team_adjusted_player_percentile(player_data, player, "onIce_fenwickPercentage"), 0.10),
     ]
 
     power_play_score = weighted_average_percentiles(
@@ -933,12 +1010,12 @@ def calculate_impact_scores(player, player_data):
             (get_player_percentile(player_data, player, "pp_points_per_60"), 0.45),
             (get_player_percentile(player_data, player, "pp_shots"), 0.20),
             (get_player_percentile(player_data, player, "pp_goals"), 0.15),
-            (get_player_percentile(player_data, player, "pp_on_ice_xgoals_percentage"), 0.20),
+            (get_team_adjusted_player_percentile(player_data, player, "pp_on_ice_xgoals_percentage"), 0.20),
         ]
     )
     penalty_kill_score = weighted_average_percentiles(
         [
-            (get_player_percentile(player_data, player, "pk_xgoals_against_per_60", False), 0.35),
+            (get_team_adjusted_player_percentile(player_data, player, "pk_xgoals_against_per_60", False), 0.35),
             (get_player_percentile(player_data, player, "pk_blocks"), 0.25),
             (get_player_percentile(player_data, player, "pk_takeaways"), 0.20),
             (get_player_percentile(player_data, player, "pk_points"), 0.20),
@@ -947,23 +1024,23 @@ def calculate_impact_scores(player, player_data):
 
     if player["position_group"] == "D":
         defensive_components = [
-            (get_player_percentile(player_data, player, "on_ice_xgoals_against_per_60", False), 0.20),
-            (get_player_percentile(player_data, player, "onIce_xGoalsPercentage"), 0.15),
-            (get_player_percentile(player_data, player, "onIce_fenwickPercentage"), 0.10),
+            (get_team_adjusted_player_percentile(player_data, player, "on_ice_xgoals_against_per_60", False), 0.20),
+            (get_team_adjusted_player_percentile(player_data, player, "onIce_xGoalsPercentage"), 0.15),
+            (get_team_adjusted_player_percentile(player_data, player, "onIce_fenwickPercentage"), 0.10),
         ]
     elif player["position"] == "C":
         defensive_components = [
-            (get_player_percentile(player_data, player, "on_ice_xgoals_against_per_60", False), 0.15),
-            (get_player_percentile(player_data, player, "onIce_xGoalsPercentage"), 0.10),
-            (get_player_percentile(player_data, player, "onIce_fenwickPercentage"), 0.05),
+            (get_team_adjusted_player_percentile(player_data, player, "on_ice_xgoals_against_per_60", False), 0.15),
+            (get_team_adjusted_player_percentile(player_data, player, "onIce_xGoalsPercentage"), 0.10),
+            (get_team_adjusted_player_percentile(player_data, player, "onIce_fenwickPercentage"), 0.05),
             (get_player_percentile(player_data, player, "takeaways_per_60"), 0.20),
             (penalty_kill_score, 0.15),
         ]
     else:
         defensive_components = [
-            (get_player_percentile(player_data, player, "on_ice_xgoals_against_per_60", False), 0.25),
-            (get_player_percentile(player_data, player, "onIce_xGoalsPercentage"), 0.20),
-            (get_player_percentile(player_data, player, "onIce_fenwickPercentage"), 0.10),
+            (get_team_adjusted_player_percentile(player_data, player, "on_ice_xgoals_against_per_60", False), 0.25),
+            (get_team_adjusted_player_percentile(player_data, player, "onIce_xGoalsPercentage"), 0.20),
+            (get_team_adjusted_player_percentile(player_data, player, "onIce_fenwickPercentage"), 0.10),
             (get_player_percentile(player_data, player, "takeaways_per_60"), 0.15),
             (penalty_kill_score, 0.10),
         ]
@@ -1212,6 +1289,9 @@ def show_impact_scores(player, player_data):
         )
         st.write(
             "Special teams TOI adjustment: PP/PK ice time is used as a confidence adjustment with a 60% to 130% trust range. It matters more than even-strength TOI because special-teams samples are noisier, but it is not one of the main skill stats."
+        )
+        st.write(
+            f"Team-context adjustment: team-driven stats like on-ice xG%, Corsi%, Fenwick%, xGA/60, PP on-ice xG%, and PK xGA/60 are adjusted by team environment. The adjustment is capped at {TEAM_CONTEXT_MAX_ADJUSTMENT} percentile points so elite players on strong teams are not over-punished."
         )
         st.write(
             f"Power play and penalty kill qualify separately. PP Impact needs at least {POWER_PLAY_TOI_MINIMUM} PP TOI/G, and PK Impact needs at least {PENALTY_KILL_TOI_MINIMUM} PK TOI/G. If neither side qualifies, Special Teams Impact shows as NA and counts as {LIMITED_SPECIAL_TEAMS_OVERALL_SCORE}/100 in Player Value Score."
