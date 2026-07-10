@@ -1099,9 +1099,9 @@ def calculate_impact_scores(player, player_data):
     microstats_row = get_microstats_row(player)
 
     offensive_components = [
-        (get_player_percentile(player_data, player, "points_per_60"), 0.40),
+        (get_player_percentile(player_data, player, "points_per_60"), 0.50),
         (get_player_percentile(player_data, player, "expected_goals_per_60"), 0.25),
-        (get_player_percentile(player_data, player, "shots_per_60"), 0.15),
+        (get_player_percentile(player_data, player, "shots_per_60"), 0.05),
         (get_team_adjusted_player_percentile(player_data, player, "onIce_xGoalsPercentage"), 0.05),
     ]
 
@@ -1372,7 +1372,7 @@ def show_impact_scores(player, player_data):
         special_teams_toi_per_game = get_special_teams_toi_per_game(player)
 
         st.write(
-            "Offensive Impact is weighted toward individual production and creation: Points/60, individual expected goals, shots, and offensive microstats. 5v5 On-Ice xG% is now only a small supporting piece."
+            "Offensive Impact is weighted heavily toward point production and individual expected goals. Shots/60, 5v5 On-Ice xG%, and offensive microstats are smaller supporting pieces."
         )
         st.write(
             "5v5 Driving Impact still uses on-ice xG%, Corsi%, and Fenwick%, but microstats like entries and possession exits now carry more of the grade."
