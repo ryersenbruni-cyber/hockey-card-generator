@@ -1,6 +1,9 @@
 import importlib
+import json
 from pathlib import Path
 import re
+from urllib.parse import quote
+from urllib.request import Request, urlopen
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -36,6 +39,7 @@ NORMAL_USAGE_LOW_TRUST = 0.80
 NORMAL_USAGE_HIGH_TRUST = 1.00
 SPECIAL_TEAMS_LOW_TRUST = 0.60
 SPECIAL_TEAMS_HIGH_TRUST = 1.00
+LAST_EDGE_DEBUG_MESSAGES = []
 
 
 def add_custom_styles():
@@ -329,24 +333,85 @@ def load_woodmoney_data():
     return woodmoney_data
 
 
-@st.cache_data(ttl=3600)
-def load_nhl_edge_data(player_id):
+def fetch_json_from_url(url):
     """
-    Load NHL EDGE tracking data for one player.
+    Load JSON from a URL using two methods.
 
-    NHL EDGE data comes from the NHL's public web API.
-    ttl=3600 means Streamlit can reuse the result for one hour.
+    Streamlit can sometimes behave differently from a quick terminal test, so
+    this tries requests first and then Python's built-in urlopen as a backup.
     """
-    edge_url = f"{NHL_EDGE_BASE_URL}/skater-detail/{player_id}/now"
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/126.0 Safari/537.36"
+        ),
+    }
+
+    global LAST_EDGE_DEBUG_MESSAGES
 
     try:
-        response = requests.get(edge_url, timeout=10)
+        session = requests.Session()
+        session.trust_env = False
+        response = session.get(url, timeout=10, headers=headers)
+        LAST_EDGE_DEBUG_MESSAGES.append(
+            f"requests {response.status_code}: {url}"
+        )
 
         if response.status_code == 200:
             return response.json()
 
-    except requests.RequestException:
-        pass
+    except (requests.RequestException, ValueError) as error:
+        LAST_EDGE_DEBUG_MESSAGES.append(
+            f"requests {type(error).__name__}: {url}"
+        )
+
+    try:
+        request = Request(url, headers=headers)
+
+        with urlopen(request, timeout=10) as response:
+            LAST_EDGE_DEBUG_MESSAGES.append(
+                f"urlopen {response.status}: {url}"
+            )
+
+            if response.status == 200:
+                return json.loads(response.read().decode("utf-8"))
+
+    except Exception as error:
+        LAST_EDGE_DEBUG_MESSAGES.append(
+            f"urlopen {type(error).__name__}: {url}"
+        )
+
+    return None
+
+
+def load_nhl_edge_data(player_id, season):
+    """
+    Load NHL EDGE tracking data for one player.
+
+    NHL EDGE data comes from the NHL's public web API.
+
+    We do not cache this request because a failed request can otherwise get
+    stuck as "not available" while testing the app.
+    """
+    global LAST_EDGE_DEBUG_MESSAGES
+    LAST_EDGE_DEBUG_MESSAGES = []
+
+    season_start = int(season)
+    season_codes_to_try = [
+        "now",
+        f"{season_start}{season_start + 1}",
+        f"{season_start - 1}{season_start}",
+    ]
+
+    for season_code in season_codes_to_try:
+        edge_url = f"{NHL_EDGE_BASE_URL}/skater-detail/{player_id}/{season_code}"
+        edge_data = fetch_json_from_url(edge_url)
+
+        if edge_data is not None:
+            LAST_EDGE_DEBUG_MESSAGES.append(f"success: {edge_url}")
+            return edge_data
 
     return None
 
@@ -1003,6 +1068,22 @@ def create_blank_headshot():
     return image
 
 
+def get_blank_headshot_svg_data_url():
+    """
+    Create a browser-friendly blank headshot fallback.
+    """
+    blank_svg = """
+    <svg xmlns="http://www.w3.org/2000/svg" width="220" height="220" viewBox="0 0 220 220">
+      <rect width="220" height="220" rx="16" fill="#f2f4f7"/>
+      <circle cx="110" cy="82" r="42" fill="#c7cdd6"/>
+      <path d="M42 192c9-45 39-70 68-70s59 25 68 70" fill="#c7cdd6"/>
+      <circle cx="110" cy="110" r="103" fill="none" stroke="#d9dee7" stroke-width="8"/>
+    </svg>
+    """
+
+    return "data:image/svg+xml;charset=utf-8," + quote(blank_svg)
+
+
 def get_official_headshot_url(player):
     """
     Ask the NHL API for the player's official headshot URL.
@@ -1043,16 +1124,69 @@ def load_headshot_or_blank(player):
     If the NHL image is missing, show a blank placeholder instead.
     """
     possible_headshot_urls = [
+        get_official_headshot_url(player),
+        get_season_team_headshot_url(player),
         get_latest_headshot_url(player),
         get_latest_team_headshot_url(player),
-        get_official_headshot_url(player),
     ]
 
     for headshot_url in possible_headshot_urls:
-        if headshot_url and image_url_works(headshot_url):
+        if headshot_url:
             return headshot_url
 
     return create_blank_headshot()
+
+
+def get_season_team_headshot_url(player):
+    """
+    Build the NHL headshot URL for the card's season and team.
+    """
+    player_id = get_player_id(player)
+    season_start = int(player["season"])
+    season_code = f"{season_start}{season_start + 1}"
+    team = player["team"]
+
+    return f"https://assets.nhle.com/mugs/nhl/{season_code}/{team}/{player_id}.png"
+
+
+def show_player_headshot(player, width=120):
+    """
+    Show a player headshot with browser-side fallbacks.
+    """
+    possible_headshot_urls = [
+        get_official_headshot_url(player),
+        get_season_team_headshot_url(player),
+        get_latest_team_headshot_url(player),
+        get_latest_headshot_url(player),
+        get_blank_headshot_svg_data_url(),
+    ]
+    possible_headshot_urls = [
+        headshot_url for headshot_url in possible_headshot_urls if headshot_url
+    ]
+
+    first_url = possible_headshot_urls[0]
+    fallback_urls = possible_headshot_urls[1:]
+    fallback_script = ""
+
+    for fallback_url in fallback_urls:
+        fallback_script += f"this.src='{fallback_url}';"
+        fallback_script += "this.onerror=function(){"
+
+    fallback_script += "this.onerror=null;"
+    fallback_script += "}" * len(fallback_urls)
+
+    st.markdown(
+        f"""
+        <img
+            src="{first_url}"
+            alt="{player['name']} headshot"
+            width="{width}"
+            style="border-radius: 10px;"
+            onerror="{fallback_script}"
+        />
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def get_selected_player(player_data):
@@ -1092,8 +1226,7 @@ def show_player_header(player):
     headshot_column, logo_column, text_column = st.columns([1, 1, 5])
 
     with headshot_column:
-        headshot_image = load_headshot_or_blank(player)
-        st.image(headshot_image, width=120)
+        show_player_headshot(player, width=120)
 
     with logo_column:
         st.image(team_logo_url, width=120)
@@ -1688,7 +1821,7 @@ def show_tracking_tools(player):
     """
     Show NHL EDGE Player & Puck Tracking stats.
     """
-    edge_data = load_nhl_edge_data(get_player_id(player))
+    edge_data = load_nhl_edge_data(get_player_id(player), player["season"])
 
     st.subheader("Tracking Tools")
     st.caption(
@@ -1697,6 +1830,16 @@ def show_tracking_tools(player):
 
     if edge_data is None:
         st.write("Tracking data is not available for this player right now.")
+        st.caption(f"Debug: player ID {get_player_id(player)}")
+
+        for debug_message in LAST_EDGE_DEBUG_MESSAGES:
+            st.caption(debug_message)
+
+        st.caption(
+            "If this player should have NHL EDGE data, fully stop and restart Streamlit. A browser refresh alone may keep an old app state."
+        )
+        if st.button("Retry NHL EDGE tracking", key=f"retry_edge_{get_player_id(player)}"):
+            st.rerun()
         return
 
     high_danger_summary = get_shot_location_summary(edge_data, "high")
@@ -2119,12 +2262,11 @@ def show_comparison_player_card(player, player_data):
     position = format_position(player["position"])
     season_range = format_season_range(player["season"])
     team_logo_url = get_team_logo_url(player["team"])
-    headshot_image = load_headshot_or_blank(player)
 
     header_columns = st.columns([1, 1, 3])
 
     with header_columns[0]:
-        st.image(headshot_image, width=90)
+        show_player_headshot(player, width=90)
 
     with header_columns[1]:
         st.image(team_logo_url, width=80)
@@ -2456,12 +2598,8 @@ def show_percentiles(player, player_data):
         show_percentile("5v5 On-Ice xGoals %", player["onIce_xGoalsPercentage_percentile"])
         show_percentile("5v5 Corsi %", player["onIce_corsiPercentage_percentile"])
         show_percentile(
-            "5v5 Takeaways/60",
-            calculate_player_data_percentile(player_data, "nst_5v5_takeaways_per_60", player),
-        )
-        show_percentile(
-            "5v5 Blocks/60",
-            calculate_player_data_percentile(player_data, "nst_5v5_blocks_per_60", player),
+            "5v5 Shots/60",
+            calculate_player_data_percentile(player_data, "nst_5v5_shots_per_60", player),
         )
 
 
