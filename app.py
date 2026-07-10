@@ -22,6 +22,8 @@ MINIMUM_GAMES_FOR_IMPACT = 10
 FULL_TRUST_GAMES = 25
 SMALL_SAMPLE_TRUST = 0.65
 SPECIAL_TEAMS_TOI_MINIMUM = 0.75
+POWER_PLAY_TOI_MINIMUM = 0.75
+PENALTY_KILL_TOI_MINIMUM = 0.75
 LIMITED_SPECIAL_TEAMS_OVERALL_SCORE = 45
 
 
@@ -967,8 +969,6 @@ def calculate_impact_scores(player, player_data):
         ]
 
     special_teams_components = [
-        (power_play_score, 0.50),
-        (penalty_kill_score, 0.50),
     ]
 
     if microstats_row is not None:
@@ -1028,7 +1028,25 @@ def calculate_impact_scores(player, player_data):
     total_toi_percentile = get_player_percentile(player_data, player, "total_toi_per_game")
     special_teams_toi_percentile = get_special_teams_toi_percentile(player_data, player)
     special_teams_toi_per_game = get_special_teams_toi_per_game(player)
-    has_enough_special_teams_time = special_teams_toi_per_game >= SPECIAL_TEAMS_TOI_MINIMUM
+    pp_toi_per_game = player.get("pp_toi_per_game", 0)
+    pk_toi_per_game = player.get("pk_toi_per_game", 0)
+
+    if pd.isna(pp_toi_per_game):
+        pp_toi_per_game = 0
+
+    if pd.isna(pk_toi_per_game):
+        pk_toi_per_game = 0
+
+    has_enough_power_play_time = pp_toi_per_game >= POWER_PLAY_TOI_MINIMUM
+    has_enough_penalty_kill_time = pk_toi_per_game >= PENALTY_KILL_TOI_MINIMUM
+
+    if has_enough_power_play_time:
+        special_teams_components.append((power_play_score, 0.50))
+
+    if has_enough_penalty_kill_time:
+        special_teams_components.append((penalty_kill_score, 0.50))
+
+    has_enough_special_teams_time = len(special_teams_components) > 0
 
     raw_offensive_impact = weighted_average_percentiles(offensive_components)
     raw_play_driving_impact = weighted_average_percentiles(play_driving_components)
@@ -1081,8 +1099,8 @@ def calculate_impact_scores(player, player_data):
     if player["position_group"] == "D":
         player_value_score = weighted_average_percentiles(
             [
-                (offensive_impact, 0.30),
-                (defensive_impact, 0.35),
+                (offensive_impact, 0.35),
+                (defensive_impact, 0.30),
                 (play_driving_impact, 0.25),
                 (special_teams_overall_score, 0.10),
             ]
@@ -1178,7 +1196,7 @@ def show_impact_scores(player, player_data):
             "Special Teams Impact gives equal room to power-play value and penalty-kill value. It now leans more on individual PP production, PP shot/goals involvement, PK blocks, PK takeaways, and shorthanded points, while team-driven PP xG% and PK xGA/60 are smaller pieces."
         )
         st.write(
-            "Player Value Score uses position-specific weights. For forwards: Offense 45%, Defense 20%, 5v5 Driving 20%, Special Teams 15%. For defensemen: Offense 30%, Defense 35%, 5v5 Driving 25%, Special Teams 10%."
+            "Player Value Score uses position-specific weights. For forwards: Offense 45%, Defense 20%, 5v5 Driving 20%, Special Teams 15%. For defensemen: Offense 35%, Defense 30%, 5v5 Driving 25%, Special Teams 10%."
         )
         st.write(
             "Sample-size rule: players under 10 games show NA. Players from 10-24 games have scores pulled toward 50 with a 65% trust factor. Players at 25+ games get normal scoring."
@@ -1196,7 +1214,7 @@ def show_impact_scores(player, player_data):
             "Special teams TOI adjustment: PP/PK ice time is used as a confidence adjustment with a 60% to 130% trust range. It matters more than even-strength TOI because special-teams samples are noisier, but it is not one of the main skill stats."
         )
         st.write(
-            f"If a player is below {SPECIAL_TEAMS_TOI_MINIMUM} combined PP+PK minutes per game, Special Teams Impact shows as NA and counts as {LIMITED_SPECIAL_TEAMS_OVERALL_SCORE}/100 in Player Value Score."
+            f"Power play and penalty kill qualify separately. PP Impact needs at least {POWER_PLAY_TOI_MINIMUM} PP TOI/G, and PK Impact needs at least {PENALTY_KILL_TOI_MINIMUM} PK TOI/G. If neither side qualifies, Special Teams Impact shows as NA and counts as {LIMITED_SPECIAL_TEAMS_OVERALL_SCORE}/100 in Player Value Score."
         )
         st.write(
             f"This player's combined PP+PK TOI/G is {round(special_teams_toi_per_game, 2)}."
