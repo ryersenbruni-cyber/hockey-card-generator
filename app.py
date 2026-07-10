@@ -18,6 +18,7 @@ scouting_report_helpers = importlib.reload(scouting_report_helpers)
 DATA_FILE_PATH = "cleaned_data/skaters_strengths.csv"
 NHL_EDGE_BASE_URL = "https://api-web.nhle.com/v1/edge"
 MICROSTATS_FILE_PATH = "data/all_three_zones_2025_26_regular.csv"
+WOODMONEY_FILE_PATH = "data/woodmoney.csv"
 MINIMUM_GAMES_FOR_IMPACT = 10
 FULL_TRUST_GAMES = 25
 SMALL_SAMPLE_TRUST = 0.65
@@ -27,6 +28,8 @@ PENALTY_KILL_TOI_MINIMUM = 0.75
 LIMITED_SPECIAL_TEAMS_OVERALL_SCORE = 45
 TEAM_CONTEXT_ADJUSTMENT_STRENGTH = 0.25
 TEAM_CONTEXT_MAX_ADJUSTMENT = 8
+QOC_ADJUSTMENT_STRENGTH = 0.06
+QOC_MAX_ADJUSTMENT = 3
 
 
 def add_custom_styles():
@@ -82,6 +85,23 @@ def load_microstats_data():
     microstats_data["name_key"] = microstats_data["Player"].apply(normalize_name)
 
     return microstats_data
+
+
+@st.cache_data
+def load_woodmoney_data():
+    """
+    Load WoodMoney quality-of-competition data.
+    """
+    woodmoney_path = Path(WOODMONEY_FILE_PATH)
+
+    if not woodmoney_path.exists():
+        return None
+
+    woodmoney_data = pd.read_csv(woodmoney_path)
+    woodmoney_data["name_key"] = woodmoney_data["Name"].apply(normalize_name)
+    woodmoney_data["position_group"] = woodmoney_data["Positions"].apply(get_woodmoney_position_group)
+
+    return woodmoney_data
 
 
 @st.cache_data(ttl=3600)
@@ -350,6 +370,92 @@ def get_microstats_row(player):
         return same_team_rows.iloc[0]
 
     return matching_rows.iloc[0]
+
+
+def get_woodmoney_position_group(positions):
+    """
+    Convert WoodMoney position text into forward or defense groups.
+    """
+    if '"D"' in str(positions):
+        return "D"
+
+    return "F"
+
+
+def get_woodmoney_rows(player):
+    """
+    Find the selected player's WoodMoney rows.
+    """
+    woodmoney_data = load_woodmoney_data()
+
+    if woodmoney_data is None:
+        return None
+
+    player_name_key = normalize_name(player["name"])
+    matching_rows = woodmoney_data[woodmoney_data["name_key"] == player_name_key]
+
+    if matching_rows.empty:
+        return None
+
+    same_team_rows = matching_rows[matching_rows["Team"] == player["team"]]
+
+    if not same_team_rows.empty:
+        return same_team_rows
+
+    return matching_rows
+
+
+def get_woodmoney_tier_row(player, tier_name):
+    """
+    Get one WoodMoney competition tier row for a player.
+    """
+    woodmoney_rows = get_woodmoney_rows(player)
+
+    if woodmoney_rows is None:
+        return None
+
+    tier_rows = woodmoney_rows[woodmoney_rows["WMTier"] == tier_name]
+
+    if tier_rows.empty:
+        return None
+
+    return tier_rows.iloc[0]
+
+
+def get_qoc_percentile(player):
+    """
+    Rank a player's elite-competition share against the same position group.
+    """
+    woodmoney_data = load_woodmoney_data()
+    elite_row = get_woodmoney_tier_row(player, "Elite")
+
+    if woodmoney_data is None or elite_row is None:
+        return None
+
+    comparison_data = woodmoney_data[
+        (woodmoney_data["WMTier"] == "Elite")
+        & (woodmoney_data["position_group"] == player["position_group"])
+        & (woodmoney_data["GP"] >= MINIMUM_GAMES_FOR_IMPACT)
+    ]
+
+    return calculate_series_percentile(
+        comparison_data["CTOI%"],
+        elite_row["CTOI%"],
+    )
+
+
+def get_qoc_player_value_adjustment(player):
+    """
+    Turn QoC percentile into a small Player Value adjustment.
+    """
+    qoc_percentile = get_qoc_percentile(player)
+
+    if qoc_percentile is None or pd.isna(qoc_percentile):
+        return 0
+
+    adjustment = (qoc_percentile - 50) * QOC_ADJUSTMENT_STRENGTH
+
+    return max(-QOC_MAX_ADJUSTMENT, min(QOC_MAX_ADJUSTMENT, adjustment))
 
 
 def format_comparison_value(value, value_type, decimals=2):
@@ -1192,6 +1298,11 @@ def calculate_impact_scores(player, player_data):
             ]
         )
 
+    if player_value_score is not None:
+        player_value_score = clamp_score(
+            player_value_score + get_qoc_player_value_adjustment(player)
+        )
+
     return {
         "Player Value Score": player_value_score,
         "Offensive Impact": offensive_impact,
@@ -1294,6 +1405,9 @@ def show_impact_scores(player, player_data):
             f"Team-context adjustment: team-driven stats like on-ice xG%, Corsi%, Fenwick%, xGA/60, PP on-ice xG%, and PK xGA/60 are adjusted by team environment. The adjustment is capped at {TEAM_CONTEXT_MAX_ADJUSTMENT} percentile points so elite players on strong teams are not over-punished."
         )
         st.write(
+            f"Quality-of-competition adjustment: WoodMoney Elite CTOI% adds or subtracts up to {QOC_MAX_ADJUSTMENT} Player Value points based on how much elite competition the player faces."
+        )
+        st.write(
             f"Power play and penalty kill qualify separately. PP Impact needs at least {POWER_PLAY_TOI_MINIMUM} PP TOI/G, and PK Impact needs at least {PENALTY_KILL_TOI_MINIMUM} PK TOI/G. If neither side qualifies, Special Teams Impact shows as NA and counts as {LIMITED_SPECIAL_TEAMS_OVERALL_SCORE}/100 in Player Value Score."
         )
         st.write(
@@ -1392,6 +1506,43 @@ def show_tracking_tools(player):
         show_quality_indicator(edge_percentile_to_100(zone_time.get("offensiveZoneEvPercentile")))
 
 
+def show_quality_of_competition(player):
+    """
+    Show WoodMoney quality-of-competition context.
+    """
+    elite_row = get_woodmoney_tier_row(player, "Elite")
+    middle_row = get_woodmoney_tier_row(player, "Middle")
+    gritensity_row = get_woodmoney_tier_row(player, "Gritensity")
+    qoc_percentile = get_qoc_percentile(player)
+    qoc_adjustment = get_qoc_player_value_adjustment(player)
+
+    st.subheader("Quality of Competition")
+    st.caption(
+        "WoodMoney context. Elite CTOI% means the share of a player's even-strength time played against elite competition."
+    )
+
+    if elite_row is None:
+        st.write("Quality-of-competition data is not available for this player.")
+        return
+
+    qoc_columns = st.columns(4)
+
+    with qoc_columns[0]:
+        show_stat("Elite CTOI%", f"{round(elite_row['CTOI%'], 1)}%")
+        show_quality_indicator(qoc_percentile)
+
+    with qoc_columns[1]:
+        middle_value = "NA" if middle_row is None else f"{round(middle_row['CTOI%'], 1)}%"
+        show_stat("Middle CTOI%", middle_value)
+
+    with qoc_columns[2]:
+        gritensity_value = "NA" if gritensity_row is None else f"{round(gritensity_row['CTOI%'], 1)}%"
+        show_stat("Depth CTOI%", gritensity_value)
+
+    with qoc_columns[3]:
+        show_stat("Player Value Adj.", round(qoc_adjustment, 1))
+
+
 def show_microstats(player):
     """
     Show All Three Zones microstats when the local data file exists.
@@ -1400,6 +1551,8 @@ def show_microstats(player):
 
     with st.expander("Microstats"):
         show_tracking_tools(player)
+        st.divider()
+        show_quality_of_competition(player)
         st.divider()
         st.caption(
             "Microstats source: All Three Zones / Corey Sznajder. These stats describe how a player creates offence, enters/exits zones, forechecks, and defends entries at 5v5."

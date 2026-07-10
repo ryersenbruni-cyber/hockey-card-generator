@@ -3,3 +3,4 @@ __pycache__/
 *.zip
 data/all_three_zones*.csv
 !data/all_three_zones_2025_26_regular.csv
+!data/woodmoney.csv
