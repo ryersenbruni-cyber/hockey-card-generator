@@ -1078,14 +1078,24 @@ def calculate_impact_scores(player, player_data):
     if special_teams_overall_score is None:
         special_teams_overall_score = LIMITED_SPECIAL_TEAMS_OVERALL_SCORE
 
-    player_value_score = weighted_average_percentiles(
-        [
-            (offensive_impact, 0.40),
-            (defensive_impact, 0.25),
-            (play_driving_impact, 0.20),
-            (special_teams_overall_score, 0.15),
-        ]
-    )
+    if player["position_group"] == "D":
+        player_value_score = weighted_average_percentiles(
+            [
+                (offensive_impact, 0.30),
+                (defensive_impact, 0.35),
+                (play_driving_impact, 0.25),
+                (special_teams_overall_score, 0.10),
+            ]
+        )
+    else:
+        player_value_score = weighted_average_percentiles(
+            [
+                (offensive_impact, 0.45),
+                (defensive_impact, 0.20),
+                (play_driving_impact, 0.20),
+                (special_teams_overall_score, 0.15),
+            ]
+        )
 
     return {
         "Player Value Score": player_value_score,
@@ -1168,7 +1178,7 @@ def show_impact_scores(player, player_data):
             "Special Teams Impact gives equal room to power-play value and penalty-kill value. It now leans more on individual PP production, PP shot/goals involvement, PK blocks, PK takeaways, and shorthanded points, while team-driven PP xG% and PK xGA/60 are smaller pieces."
         )
         st.write(
-            "Player Value Score is weighted as: Offensive Impact 40%, Defensive Impact 25%, 5v5 Driving Impact 20%, and Special Teams Impact 15%."
+            "Player Value Score uses position-specific weights. For forwards: Offense 45%, Defense 20%, 5v5 Driving 20%, Special Teams 15%. For defensemen: Offense 30%, Defense 35%, 5v5 Driving 25%, Special Teams 10%."
         )
         st.write(
             "Sample-size rule: players under 10 games show NA. Players from 10-24 games have scores pulled toward 50 with a 65% trust factor. Players at 25+ games get normal scoring."
